@@ -1,0 +1,19 @@
+# Rust build output
+/target/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Local application state
+.hecate/
+*.db
+*.db-shm
+*.db-wal
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
