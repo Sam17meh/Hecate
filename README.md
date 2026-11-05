@@ -9,7 +9,7 @@
 [![Status: In Design](https://img.shields.io/badge/status-in%20design-8b5cf6.svg)](#project-status)
 [![Language: Rust](https://img.shields.io/badge/core-Rust-orange.svg)](https://www.rust-lang.org/)
 [![Interface: CLI](https://img.shields.io/badge/interface-CLI-64748b.svg)](#the-planned-cli)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: TBD](https://img.shields.io/badge/license-to%20be%20decided-lightgrey.svg)](#project-status)
 
 *Every codebase is a labyrinth. Hecate helps you find the path to a worthwhile contribution.*
 
@@ -248,7 +248,7 @@ These safeguards are design requirements; they are not yet implemented.
 
 ## Project status
 
-**Hecate is in the planning and architecture stage.** The vision, initial audience and product direction have been established. The CLI, agents, analysis pipeline and execution environment are planned work—not currently available features.
+**Hecate is in the planning and architecture stage.** The vision, initial audience and product direction have been established. The CLI, agents, analysis pipeline and execution environment are planned work—not currently available features. The project license has not yet been selected.
 
 This repository will evolve alongside the implementation. Design decisions, milestones and limitations should remain visible rather than being hidden behind ambitious claims.
 
