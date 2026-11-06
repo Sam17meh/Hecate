@@ -1,5 +1,7 @@
-mod inspection;
 mod analysis;
+mod inspection;
+
+use analysis::dependencies::build_dependency_graph;
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 
@@ -39,7 +41,7 @@ fn identify_target(input: &str) -> Result<RepositoryTarget, String> {
     if path.exists() && path.is_dir() {
         return Ok(RepositoryTarget::Local(
             path.canonicalize()
-                .map_err(|e| format!("Could not resolve path: {e}"))?
+                .map_err(|e| format!("Could not resolve path: {e}"))?,
         ));
     }
 
@@ -50,9 +52,8 @@ fn identify_target(input: &str) -> Result<RepositoryTarget, String> {
         && !parts[0].is_empty()
         && !parts[1].is_empty()
         && parts.iter().all(|part| {
-            part.chars().all(|c| {
-                c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.'
-            })
+            part.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
         })
     {
         return Ok(RepositoryTarget::GitHub {
@@ -63,8 +64,6 @@ fn identify_target(input: &str) -> Result<RepositoryTarget, String> {
 
     Err(format!("Invalid repository target: {input}"))
 }
-
-
 
 fn main() {
     let cli = Cli::parse();
@@ -114,6 +113,74 @@ fn main() {
 
                             for file in &info.source_files {
                                 println!("  {}", file);
+                            }
+                            println!("\n--- Rust Module Dependencies ---");
+
+                            match build_dependency_graph(&info) {
+                                Ok(graph) => {
+                                    if graph.dependencies.is_empty() {
+                                        println!("  No Rust module dependencies found.");
+                                    } else {
+                                        for dependency in &graph.dependencies {
+                                            println!(
+                                                "  {} -> {}",
+                                                dependency.source, dependency.target
+                                            );
+                                        }
+
+                                        println!(
+                                            "\nTotal module dependencies: {}",
+                                            graph.dependencies.len()
+                                        );
+
+                                        println!("\n--- Unresolved Module Declarations ---");
+
+                                        if graph.unresolved_modules.is_empty() {
+                                            println!("  No unresolved module declarations found.");
+                                        } else {
+                                            for module in &graph.unresolved_modules {
+                                                let context = if module.module_context.is_empty() {
+                                                    String::new()
+                                                } else {
+                                                    format!(
+                                                        " (inside {})",
+                                                        module.module_context.join("::")
+                                                    )
+                                                };
+
+                                                println!(
+                                                    "  {} -> {}{}",
+                                                    module.source, module.module_name, context
+                                                );
+                                            }
+                                        }
+
+                                        println!(
+                                            "\nTotal unresolved modules: {}",
+                                            graph.unresolved_modules.len()
+                                        );
+
+                                        println!("\n--- Parsing Diagnostics ---");
+
+                                        if graph.parse_errors.is_empty() {
+                                            println!("  No parsing errors found.");
+                                        } else {
+                                            for error in &graph.parse_errors {
+                                                println!("  File: {}", error.source);
+                                                println!("  Error: {}", error.message);
+                                            }
+                                        }
+
+                                        println!(
+                                            "\nTotal parsing errors: {}",
+                                            graph.parse_errors.len()
+                                        );
+                                    }
+                                }
+
+                                Err(error) => {
+                                    eprintln!("Dependency analysis failed: {error}");
+                                }
                             }
                         }
 

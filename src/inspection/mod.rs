@@ -1,4 +1,3 @@
-
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
@@ -72,12 +71,7 @@ fn scan_directory(
                 continue;
             }
 
-            scan_directory(
-                &path,
-                root,
-                source_files,
-                language_counts,
-            )?;
+            scan_directory(&path, root, source_files, language_counts)?;
         } else if file_type.is_file() {
             if let Some(extension) = path.extension().and_then(|e| e.to_str()) {
                 if let Some(language) = detect_language(&extension.to_lowercase()) {
@@ -89,9 +83,7 @@ fn scan_directory(
 
                     source_files.push(relative_path);
 
-                    *language_counts
-                        .entry(language.to_string())
-                        .or_insert(0) += 1;
+                    *language_counts.entry(language.to_string()).or_insert(0) += 1;
                 }
             }
         }
@@ -141,12 +133,7 @@ pub fn inspect_local(path: &Path) -> io::Result<RepositoryInfo> {
     let mut source_files = Vec::new();
     let mut language_counts = BTreeMap::new();
 
-    scan_directory(
-        &root,
-        &root,
-        &mut source_files,
-        &mut language_counts,
-    )?;
+    scan_directory(&root, &root, &mut source_files, &mut language_counts)?;
 
     source_files.sort();
 
