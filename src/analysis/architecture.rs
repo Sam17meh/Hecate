@@ -193,6 +193,8 @@ mod tests {
             dependencies: vec![Dependency {
                 source: "src/main.rs".to_string(),
                 target: "src/lib.rs".to_string(),
+                module_name: "lib".to_string(),
+                module_context: Vec::new(),
             }],
             unresolved_modules: Vec::new(),
             parse_errors: Vec::new(),
@@ -242,6 +244,8 @@ mod tests {
             dependencies: vec![Dependency {
                 source: "src/main.rs".to_string(),
                 target: "src/lib.rs".to_string(),
+                module_name: "lib".to_string(),
+                module_context: Vec::new(),
             }],
             unresolved_modules: Vec::new(),
             parse_errors: Vec::new(),

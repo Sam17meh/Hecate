@@ -34,10 +34,12 @@ pub struct ParseError {
 pub struct Dependency {
     pub source: String,
     pub target: String,
+    pub module_name: String,
+    pub module_context: Vec<String>,
 }
 
 // Resolve a Rust module declaration to its actual source file.
-fn resolve_module_path(
+pub(crate) fn resolve_module_path(
     declaration: &ModuleDeclaration,
     available_files: &[String],
 ) -> Option<String> {
@@ -117,6 +119,8 @@ pub fn build_dependency_graph(repository: &RepositoryInfo) -> Result<DependencyG
                 dependencies.push(Dependency {
                     source: source_file.clone(),
                     target,
+                    module_name: declaration.module_name,
+                    module_context: declaration.module_context,
                 });
             } else {
                 unresolved_modules.push(UnresolvedModule {
