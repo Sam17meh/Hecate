@@ -3,6 +3,7 @@ use tree_sitter::{Node, Parser};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportDeclaration {
     pub source: String,
+    pub module_context: Vec<String>,
     pub path: String,
     pub alias: Option<String>,
     pub is_glob: bool,
@@ -29,7 +30,13 @@ pub fn extract_imports(
 
     let mut imports = Vec::new();
 
-    collect_imports(tree.root_node(), source_code, file_path, &mut imports);
+    collect_imports(
+        tree.root_node(),
+        source_code,
+        file_path,
+        &mut Vec::new(),
+        &mut imports,
+    );
 
     Ok(imports)
 }
@@ -38,6 +45,7 @@ fn collect_imports(
     node: Node,
     source_code: &str,
     file_path: &str,
+    module_context: &mut Vec<String>,
     imports: &mut Vec<ImportDeclaration>,
 ) {
     if node.kind() == "use_declaration" {
@@ -47,9 +55,27 @@ fn collect_imports(
                 "",
                 source_code,
                 file_path,
+                module_context.clone(),
                 node.start_position().row + 1,
                 imports,
             );
+        }
+
+        return;
+    }
+
+    if node.kind() == "mod_item" {
+        if let (Some(name_node), Some(body)) = (
+            node.child_by_field_name("name"),
+            node.child_by_field_name("body"),
+        ) {
+            let module_name = node_text(name_node, source_code);
+
+            module_context.push(module_name);
+
+            collect_imports(body, source_code, file_path, module_context, imports);
+
+            module_context.pop();
         }
 
         return;
@@ -59,7 +85,7 @@ fn collect_imports(
         if let Some(child) =
             node.named_child(u32::try_from(index).expect("Tree-sitter child index exceeds u32"))
         {
-            collect_imports(child, source_code, file_path, imports);
+            collect_imports(child, source_code, file_path, module_context, imports);
         }
     }
 }
@@ -69,6 +95,7 @@ fn collect_use_tree(
     prefix: &str,
     source_code: &str,
     file_path: &str,
+    module_context: Vec<String>,
     line: usize,
     imports: &mut Vec<ImportDeclaration>,
 ) {
@@ -79,7 +106,15 @@ fn collect_use_tree(
                 let combined = combine_path(prefix, &path);
 
                 if let Some(list) = node.child_by_field_name("list") {
-                    collect_use_tree(list, &combined, source_code, file_path, line, imports);
+                    collect_use_tree(
+                        list,
+                        &combined,
+                        source_code,
+                        file_path,
+                        module_context.clone(),
+                        line,
+                        imports,
+                    );
                 }
             }
         }
@@ -89,7 +124,15 @@ fn collect_use_tree(
                 if let Some(child) = node
                     .named_child(u32::try_from(index).expect("Tree-sitter child index exceeds u32"))
                 {
-                    collect_use_tree(child, prefix, source_code, file_path, line, imports);
+                    collect_use_tree(
+                        child,
+                        prefix,
+                        source_code,
+                        file_path,
+                        module_context.clone(),
+                        line,
+                        imports,
+                    );
                 }
             }
         }
@@ -104,6 +147,7 @@ fn collect_use_tree(
 
                 imports.push(ImportDeclaration {
                     source: file_path.to_string(),
+                    module_context: module_context.clone(),
                     path: combine_path(prefix, &path),
                     alias,
                     is_glob: false,
@@ -120,6 +164,7 @@ fn collect_use_tree(
 
                 imports.push(ImportDeclaration {
                     source: file_path.to_string(),
+                    module_context: module_context.clone(),
                     path: combine_path(prefix, &path),
                     alias: None,
                     is_glob: true,
@@ -133,6 +178,7 @@ fn collect_use_tree(
 
             imports.push(ImportDeclaration {
                 source: file_path.to_string(),
+                module_context: module_context.clone(),
                 path: combine_path(prefix, &path),
                 alias: None,
                 is_glob: false,
@@ -256,6 +302,26 @@ mod tests {
         let imports = extract_imports(source, "src/main.rs").unwrap();
 
         assert_eq!(imports[0].line, 3);
+    }
+
+    #[test]
+    fn records_nested_inline_module_context() {
+        let source = r#"
+            mod analysis {
+                mod helpers {
+                    use super::symbols::Symbol;
+                }
+            }
+        "#;
+
+        let imports = extract_imports(source, "src/main.rs").unwrap();
+
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].path, "super::symbols::Symbol");
+        assert_eq!(
+            imports[0].module_context,
+            vec!["analysis".to_string(), "helpers".to_string()]
+        );
     }
 
     #[test]
