@@ -527,4 +527,44 @@ mod tests {
 
         assert!(result.is_err());
     }
+
+    #[test]
+    fn continues_analysis_after_syntax_error() {
+        let root = std::env::temp_dir().join(format!("hecate-regression-{}", std::process::id()));
+
+        let _ = fs::remove_dir_all(&root);
+
+        fs::create_dir_all(root.join("src")).unwrap();
+
+        fs::write(root.join("src/main.rs"), "fn main() { let broken = ; }").unwrap();
+
+        fs::write(root.join("src/lib.rs"), "mod helper;").unwrap();
+
+        fs::write(root.join("src/helper.rs"), "pub fn help() {}").unwrap();
+
+        let repository = RepositoryInfo {
+            root: root.clone(),
+            is_git_repository: false,
+            entries: vec![],
+            project_markers: vec![],
+            source_files: vec![
+                "src/main.rs".to_string(),
+                "src/lib.rs".to_string(),
+                "src/helper.rs".to_string(),
+            ],
+            language_counts: vec![],
+        };
+
+        let graph = build_dependency_graph(&repository).unwrap();
+
+        assert_eq!(graph.parse_errors.len(), 1);
+        assert_eq!(graph.parse_errors[0].source, "src/main.rs");
+
+        assert_eq!(graph.dependencies.len(), 1);
+        assert_eq!(graph.dependencies[0].target, "src/helper.rs");
+
+        assert!(graph.unresolved_modules.is_empty());
+
+        fs::remove_dir_all(&root).unwrap();
+    }
 }

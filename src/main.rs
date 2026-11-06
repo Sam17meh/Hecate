@@ -2,6 +2,7 @@ mod analysis;
 mod inspection;
 
 use analysis::dependencies::build_dependency_graph;
+use analysis::symbols::analyze_repository;
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 
@@ -180,6 +181,66 @@ fn main() {
 
                                 Err(error) => {
                                     eprintln!("Dependency analysis failed: {error}");
+                                }
+                            }
+                            println!("\n--- Rust Symbol Analysis ---");
+
+                            match analyze_repository(&info.source_files, &info.root) {
+                                Ok(symbol_analysis) => {
+                                    println!(
+                                        "Total symbols detected: {}",
+                                        symbol_analysis.symbols.len()
+                                    );
+
+                                    let mut grouped: std::collections::BTreeMap<&str, Vec<_>> =
+                                        std::collections::BTreeMap::new();
+
+                                    for symbol in &symbol_analysis.symbols {
+                                        grouped
+                                            .entry(symbol.kind.as_str())
+                                            .or_default()
+                                            .push(symbol);
+                                    }
+
+                                    for (kind, symbols) in &grouped {
+                                        println!("\n{} ({}):", kind, symbols.len());
+
+                                        for symbol in symbols {
+                                            println!(
+                                                "  {} - {}:{}-{}",
+                                                symbol.name,
+                                                symbol.file,
+                                                symbol.start_line,
+                                                symbol.end_line
+                                            );
+
+                                            if !symbol.scope.is_empty() {
+                                                println!("    Scope: {}", symbol.scope.join("::"));
+                                            }
+
+                                            if symbol.is_test {
+                                                println!("    Classification: test code");
+                                            }
+                                        }
+                                    }
+                                    println!("\n--- Symbol diagnostics ---");
+
+                                    if symbol_analysis.diagnostics.is_empty() {
+                                        println!("  No symbol analysis errors.");
+                                    } else {
+                                        for diagnostic in &symbol_analysis.diagnostics {
+                                            println!("  File: {}", diagnostic.file);
+                                            println!("  Error: {}", diagnostic.message);
+                                        }
+                                    }
+
+                                    println!(
+                                        "Total symbol diagnostics: {}",
+                                        symbol_analysis.diagnostics.len()
+                                    );
+                                }
+                                Err(error) => {
+                                    eprintln!("Symbol analysis failed: {error}");
                                 }
                             }
                         }
