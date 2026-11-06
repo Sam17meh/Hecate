@@ -1,6 +1,7 @@
 mod analysis;
 mod inspection;
 
+use analysis::architecture::build_architecture_map;
 use analysis::dependencies::build_dependency_graph;
 use analysis::symbols::analyze_repository;
 use clap::{Parser, Subcommand};
@@ -238,6 +239,127 @@ fn main() {
                                         "Total symbol diagnostics: {}",
                                         symbol_analysis.diagnostics.len()
                                     );
+
+                                    println!("\n--- Repository Architecture Map ---");
+
+                                    match build_dependency_graph(&info) {
+                                        Ok(architecture_dependencies) => {
+                                            let architecture = build_architecture_map(
+                                                &info,
+                                                &architecture_dependencies,
+                                                &symbol_analysis,
+                                            );
+
+                                            let summary = &architecture.summary;
+
+                                            println!("\nArchitecture Summary");
+                                            println!(
+                                                "  Source files: {}",
+                                                summary.total_source_files
+                                            );
+                                            println!("  Rust files: {}", summary.rust_files);
+                                            println!(
+                                                "  Files with symbols: {}",
+                                                summary.files_with_symbols
+                                            );
+                                            println!(
+                                                "  Files without symbols: {}",
+                                                summary.files_without_symbols
+                                            );
+                                            println!("  Total symbols: {}", summary.total_symbols);
+                                            println!("  Test symbols: {}", summary.test_symbols);
+                                            println!(
+                                                "  Module dependencies: {}",
+                                                summary.module_dependencies
+                                            );
+                                            println!(
+                                                "  Unresolved modules: {}",
+                                                summary.unresolved_modules
+                                            );
+                                            println!(
+                                                "  Dependency parse errors: {}",
+                                                summary.dependency_parse_errors
+                                            );
+                                            println!(
+                                                "  Symbol diagnostics: {}",
+                                                summary.symbol_diagnostics
+                                            );
+
+                                            println!("\nFile Architecture");
+
+                                            for file in &architecture.files {
+                                                println!("\n  {}", file.path);
+
+                                                if file.is_test_file {
+                                                    println!("    Classification: test file");
+                                                }
+
+                                                if !file.dependencies.is_empty() {
+                                                    println!("    Dependencies:");
+
+                                                    for dependency in &file.dependencies {
+                                                        println!("      -> {}", dependency);
+                                                    }
+                                                }
+
+                                                if !file.symbols.is_empty() {
+                                                    println!("    Symbols:");
+
+                                                    for symbol in &file.symbols {
+                                                        let scope = if symbol.scope.is_empty() {
+                                                            String::new()
+                                                        } else {
+                                                            format!(
+                                                                " [{}]",
+                                                                symbol.scope.join("::")
+                                                            )
+                                                        };
+
+                                                        let test_label = if symbol.is_test {
+                                                            " [test]"
+                                                        } else {
+                                                            ""
+                                                        };
+
+                                                        println!(
+                                                            "      {} {}:{}-{}{}{}",
+                                                            symbol.kind,
+                                                            symbol.name,
+                                                            symbol.start_line,
+                                                            symbol.end_line,
+                                                            scope,
+                                                            test_label
+                                                        );
+                                                    }
+                                                }
+                                            }
+
+                                            println!("\nArchitecture Diagnostics");
+
+                                            if architecture.diagnostics.is_empty() {
+                                                println!("  No architecture diagnostics.");
+                                            } else {
+                                                for diagnostic in &architecture.diagnostics {
+                                                    let location = diagnostic
+                                                        .file
+                                                        .as_deref()
+                                                        .unwrap_or("<repository>");
+
+                                                    println!(
+                                                        "  [{}] {}: {}",
+                                                        diagnostic.category,
+                                                        location,
+                                                        diagnostic.message
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        Err(error) => {
+                                            eprintln!(
+                                                "Architecture dependency analysis failed: {error}"
+                                            );
+                                        }
+                                    }
                                 }
                                 Err(error) => {
                                     eprintln!("Symbol analysis failed: {error}");
