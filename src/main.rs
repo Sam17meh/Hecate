@@ -118,7 +118,8 @@ fn main() {
                             }
                             println!("\n--- Rust Module Dependencies ---");
 
-                            match build_dependency_graph(&info) {
+                            let dependency_graph = build_dependency_graph(&info);
+                            match &dependency_graph {
                                 Ok(graph) => {
                                     if graph.dependencies.is_empty() {
                                         println!("  No Rust module dependencies found.");
@@ -242,7 +243,7 @@ fn main() {
 
                                     println!("\n--- Repository Architecture Map ---");
 
-                                    match build_dependency_graph(&info) {
+                                    match &dependency_graph {
                                         Ok(architecture_dependencies) => {
                                             let architecture = build_architecture_map(
                                                 &info,
