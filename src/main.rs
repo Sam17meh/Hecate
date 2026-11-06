@@ -1,4 +1,5 @@
 mod inspection;
+mod analysis;
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 
