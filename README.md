@@ -75,7 +75,7 @@ flowchart TD
     class L,N,T output
 ```
 
-The diagram represents the **intended workflow**, not implemented functionality. The first milestone focuses on repository understanding and trustworthy opportunity discovery. Implementation and contribution assistance follow once the analysis is reliable.
+The diagram represents the **intended workflow** , not implemented functionality. The first milestone focuses on repository understanding and trustworthy opportunity discovery. Implementation and contribution assistance follow once the analysis is reliable.
 
 ## What Hecate aims to do
 
