@@ -87,7 +87,7 @@ The diagram represents the **intended workflow**, not implemented functionality.
 | Opportunity discovery | Find potential bugs, performance bottlenecks, testing gaps and design improvements |
 | Evidence-based ranking | Prioritise findings by impact, confidence, effort and risk |
 | Assisted implementation | Plan and implement a contributor-selected change in isolation |
-| Verification | Run relevant checks and report exactly what passed, failed or remains unknown |
+| Verification | Run relevant checks and report exactly what passed, failed, or remains unknown |
 | Contribution preparation | Help the contributor prepare a clear, reviewable patch and pull request |
 
 ## Design principles
