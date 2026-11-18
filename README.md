@@ -102,7 +102,7 @@ Every finding should point to supporting evidence: relevant code, tests, documen
 Discovery agents should not be the final judges of their own findings. Important opportunities should be challenged and checked independently.
 
 ### 4. Human authority
-Hecate may investigate, plan, implement and verify. The contributor decides what to pursue, reviews changes, and controls whether anything is submitted upstream.
+Hecate may investigate, plan, implement, and verify. The contributor decides what to pursue, reviews changes, and controls whether anything is submitted upstream.
 
 ### 5. Isolation by default
 Future implementation work should happen in isolated worktrees and restricted execution environments. Untrusted repository code must never be treated as safe merely because an AI agent selected it.
