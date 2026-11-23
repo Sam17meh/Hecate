@@ -2,7 +2,7 @@
 
 ## Project
 
-HECATE is a Rust CLI for repository intelligence and open-source contribution assistance. It inspects repositories, maps public GitHub issues to possible code locations, creates evidence-backed plans, and can prepare a human-approved isolated local clone. Its native agent runtime supports a configurable OpenAI-compatible Chat Completions provider, but is not currently exposed as an interactive CLI workflow.
+HECATE is a Rust CLI for repository intelligence and open-source contribution assistance. It inspects repositories, maps public GitHub issues to possible code locations, creates evidence-backed plans, prepares isolated local clones, and can validate, review, and apply a user-supplied patch after explicit terminal approval. Its native model-agent runtime supports a configurable OpenAI-compatible Chat Completions provider, but is not exposed as an interactive agent workflow.
 
 Use [the architecture guide](docs/ARCHITECTURE.md), [runtime guide](docs/AGENT_RUNTIME.md), [security guide](docs/SECURITY.md), [provider guide](docs/PROVIDERS.md), and [roadmap](docs/ROADMAP.md) as the canonical implementation documentation. `docs/MVP.md` is an earlier product specification; treat it as design history where it differs from source or the canonical roadmap.
 
@@ -18,7 +18,7 @@ This is a modular Rust binary crate. `src/main.rs` parses the CLI and renders ou
 - `src/agent/`: provider contract, deterministic mock and OpenAI-compatible HTTP provider, runtime loop, versioned session context, permission-aware tool registry, and six read-only prepared-workspace tools.
 - `tests/`: CLI integration tests. Most behavior tests are colocated with their modules.
 
-Current commands are `inspect`, `discover`, `plan`, and `prepare`. There is no agent-run command, MCP integration, write/patch tool, shell tool, or repository-code/test runner. The live provider is library-integrated but not yet user-accessible through the CLI.
+Current commands are `inspect`, `discover`, `plan`, `prepare`, and `contribute`. `contribute` prepares a fresh issue workspace, reads a bounded user-supplied JSON patch proposal, validates and previews it, requires full-hash interactive approval, and applies it in the same process. No agent-run command, MCP integration, model-driven patch generation, shell tool, or repository-code/test runner exists. The live model provider remains library-integrated and is not exposed through the CLI.
 
 ## Agent runtime and approvals
 
@@ -28,7 +28,7 @@ Sessions carry repository, issue, and approved plan-reference context. Repositor
 
 `OpenAiCompatibleProvider` reads `HECATE_API_KEY`, `HECATE_BASE_URL`, and `HECATE_MODEL`; optional timeout, request-size, and response-size variables are documented in [PROVIDERS.md](docs/PROVIDERS.md). Keep credentials out of logs, errors, session state, and documentation.
 
-`src/agent/patch.rs` defines untrusted structured patch proposals. `src/agent/patch_validation.rs` validates replace/create proposals against in-process workspace capabilities and computes results in memory. `src/agent/patch_approval.rs` creates a private, one-use approval only after interactive confirmation of the full patch hash. `src/agent/patch_application.rs` consumes that approval and applies only the validated replacement/create operations with staged files, verification, and best-effort verified rollback. These are internal APIs; there is no user-facing apply workflow. Bound serialized proposal bytes before serde deserialization; validator limits apply afterward. See [SECURITY.md](docs/SECURITY.md) for capability and platform limits, including non-atomic multi-file and crash behavior.
+`src/agent/patch.rs` defines untrusted structured patch proposals. `src/agent/patch_validation.rs` validates replace/create proposals against in-process workspace capabilities and computes results in memory. `src/agent/patch_approval.rs` creates a private, one-use approval only after interactive confirmation of the full patch hash. `src/agent/patch_application.rs` consumes that approval and applies only the validated replacement/create operations with staged files, verification, and best-effort verified rollback. `hecate contribute REPOSITORY ISSUE --proposal FILE` orchestrates these APIs in one process so retained workspace capabilities are never reconstructed from a path. Proposal JSON is capped at 8 MiB before deserialization; validator limits apply afterward. See [SECURITY.md](docs/SECURITY.md) for capability and platform limits, including non-atomic multi-file and crash behavior.
 
 Workspace preparation is bounded local-CLI protection, not an adversarial filesystem boundary: creation and Git operations use paths, with identity checks before and after operations. These checks detect many substitutions but cannot prevent every concurrent replacement. A malicious same-user process with write access to the selected workspace parent is outside the current threat model. Capability-relative patch validation protects reads after capabilities are established; it does not retroactively secure preparation. Do not describe preparation as race-free or the workspace as an OS sandbox. Windows ordinal path comparison is not a universal filesystem-equivalence guarantee. See [SECURITY.md](docs/SECURITY.md).
 
@@ -49,6 +49,7 @@ cargo run -- inspect ./path/to/repository
 cargo run -- discover owner/repo
 cargo run -- plan owner/repo 123
 cargo run -- prepare owner/repo 123
+cargo run -- contribute owner/repo 123 --proposal ./proposal.json
 ```
 
 Add meaningful tests for behavior changes. Prefer temporary filesystem/Git fixtures and local mocked HTTP/provider responses; tests should not require live GitHub or model credentials, or mutate the HECATE checkout. Preserve existing CLI commands and tests.

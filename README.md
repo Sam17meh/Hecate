@@ -75,7 +75,7 @@ flowchart TD
     class L,N,T output
 ```
 
-The diagram represents the **intended workflow**. Hecate currently supports local repository inspection, heuristic discovery from public GitHub issues, contribution planning, and approved local workspace preparation. Assisted implementation and independent validation remain future work.
+The diagram represents the **intended workflow**. HECATE supports local repository inspection, heuristic discovery from public GitHub issues, contribution planning, approved local workspace preparation, and a CLI flow for applying a user-supplied structured patch after explicit human review. Model-driven patch generation, repository test execution, and independent validation remain future work.
 
 ## What Hecate aims to do
 
@@ -143,6 +143,15 @@ After reviewing a plan, prepare an isolated local clone for that issue. HECATE r
 hecate prepare owner/repo 123
 hecate prepare owner/repo 123 --workspace-dir ./hecate-workspaces
 ```
+
+To apply a patch proposal you prepared yourself, use `contribute`:
+
+```bash
+hecate contribute owner/repo 123 --proposal ./proposal.json
+hecate contribute owner/repo 123 --proposal ./proposal.json --workspace-dir ./hecate-workspaces
+```
+
+The proposal is UTF-8 JSON `PatchProposal` schema version `1`, with `replace` operations (expected original SHA-256 and exact text edits) or `create` operations (new UTF-8 content). JSON input is capped at 8 MiB before parsing, followed by stricter patch validation limits. `contribute` creates a fresh issue workspace and retains its trusted capabilities in memory through validation, complete escaped preview, exact full-hash interactive approval, application, and outcome reporting. Workspace creation and patch application each require explicit interactive confirmation; there is no `--yes` or environment approval. The CLI does not generate proposals with a model, run tests or other repository commands, commit, push, or create pull requests. Failed or rejected workflows preserve the prepared workspace. Multi-file changes are not atomic as a group; review recovery instructions and preserved artifacts if application reports recovery required.
 
 By default, workspaces are stored in the platform user-data directory under `.hecate/workspaces`; `HECATE_WORKSPACE_DIR` or `--workspace-dir` can override the root. Each workspace contains a dedicated Git clone in `repository/`, a branch named `hecate/issue-<number>` at the exact commit used for planning, and versioned plan/audit metadata under `.hecate/`. Existing issue workspaces and matching remote branch names are never overwritten or reused. Preparation contacts GitHub to clone the public source and check for a branch-name collision. Git hooks and configured external checkout filters are disabled for the clone and branch checkout, and Git LFS smudging is skipped. HECATE does not push, create pull requests, edit source files, execute repository build/test scripts, or remove workspaces. If an operation fails after reserving the workspace directory, HECATE preserves it for inspection and reports its path.
 
@@ -233,7 +242,7 @@ The canonical implementation documentation is in [`docs/`](docs/):
 
 ## Roadmap
 
-Repository inspection, GitHub contribution discovery, planning, approved workspace preparation, and the native agent runtime are implemented. The runtime includes a mock provider and a configurable OpenAI-compatible Chat Completions provider, plus read-only repository tools; it is not yet available through a CLI command. Controlled implementation (4D) and independent review/verification (5) remain future work. See the [detailed roadmap](docs/ROADMAP.md).
+Repository inspection, GitHub contribution discovery, planning, approved workspace preparation, the native agent runtime, and the user-supplied patch approval/application CLI are implemented. The model runtime still has no user-facing command or model-driven patch generation. Independent review/verification (5) remains future work. See the [detailed roadmap](docs/ROADMAP.md).
 
 ## Safety and trust
 
@@ -248,19 +257,19 @@ Repositories are untrusted input. Source files, documentation, build scripts and
 
 The current native agent foundation includes six registered, read-only repository tools: `list_files`, `read_file`, `search_code`, `inspect_symbol`, `find_references`, and `read_diff`. They are bound to a prepared HECATE checkout, revalidate its workspace manifest and stored plan, and use a capability-scoped filesystem root. File access rejects absolute paths, traversal, symlinks and HECATE/Git metadata; scans and returned data have limits. Common credential filenames and recognizable secret lines are filtered or redacted.
 
-HECATE has an internal patch proposal validator, interactive approval foundation, and controlled patch application API. The validator supports exact text replacements and new-file proposals, computes resulting contents and a deterministic SHA-256 hash, and builds a review preview. Approval requires a real interactive terminal and confirmation of the full patch hash. The application API consumes that private one-use approval, stages and verifies results before modifying targets, verifies each result, and attempts reverse-order rollback after a failure. These are internal APIs only: there is no user-facing approval/application CLI workflow, no model-driven patch generation, and no test or command execution. Multi-file changes are not atomic as a group, and process or machine failure can leave partial changes. See [SECURITY.md](docs/SECURITY.md).
+The `contribute` CLI connects patch proposal validation, interactive approval, and controlled application. It accepts user-supplied schema-versioned JSON proposals up to 8 MiB, supports exact text replacements and new-file proposals, computes a deterministic SHA-256 hash, and displays a complete review preview. Approval requires a real interactive terminal and the full patch hash. The command retains the prepared workspace capability in-process and consumes the private one-use approval through the application API. Application stages and verifies results before modifying targets, then verifies each result and attempts reverse-order rollback after failure. There is no model-driven patch generation, test, or command execution. Multi-file changes are not atomic as a group, and process or machine failure can leave partial changes. See [SECURITY.md](docs/SECURITY.md).
 
-This is a restricted repository-reading interface, not a complete security sandbox. Repositories remain untrusted; no shell, build, test, or other repository process is run by these tools. Secret detection is heuristic and cannot guarantee that arbitrary credentials embedded in ordinary source files are recognized. Patch application is a separate internal API and is not registered as an agent tool. It uses capability-relative checks where available and per-file atomic operations, but does not provide group atomicity or crash-safe transactions.
+The model agent has a restricted repository-reading interface, not a complete security sandbox. Repositories remain untrusted; no shell, build, test, or other repository process is run by the agent tools or `contribute` workflow. Secret detection is heuristic and cannot guarantee that arbitrary credentials embedded in ordinary source files are recognized. Patch application is exposed only through `contribute` after interactive human approval; it is not registered as an agent tool. It uses capability-relative checks where available and per-file atomic operations, but does not provide group atomicity or crash-safe transactions.
 
 Workspace preparation and Git operations still use path-based operations. Identity checks before and after these operations detect many workspace, checkout, or metadata substitutions, but cannot prevent every concurrent path replacement. A malicious concurrent process running as the same OS user with write access to the selected workspace parent is outside HECATE's current threat model. Capability-relative patch validation protects reads after its capabilities are established; it does not retroactively secure preparation. A prepared workspace is not an OS security sandbox. Windows path duplicate checks use ordinal case-insensitive comparison and do not prove equivalence under every volume's filesystem rules. See [SECURITY.md](docs/SECURITY.md) for the precise boundaries.
 
 When the native runtime is used, conversation context, repository excerpts, and tool results are sent to the configured model provider. Configure only a provider trusted with that repository data. Exact configured-key redaction helps prevent accidental exposure but does not replace secret management or guarantee detection of every secret. No user-facing agent CLI or provider consent workflow is implemented yet. Provider request-size limits are separate from HTTP timeouts; see the [provider guide](docs/PROVIDERS.md).
 
-The runtime now includes a real provider adapter and deterministic reliability/integration coverage. Internal controlled, human-approved patch application is implemented, but there is no end-to-end agent CLI workflow or independent review/verification yet.
+The runtime includes a real provider adapter and deterministic reliability/integration coverage. The `contribute` workflow applies only user-supplied patches after human approval; no model agent drives that workflow. Independent review/verification is not implemented.
 
 ## Project status
 
-**Hecate is in early implementation.** The CLI supports local inspection, public GitHub repository retrieval, Rust source analysis, open-issue retrieval, heuristic issue-to-code mapping and contribution ranking, evidence-backed draft plans, and explicitly approved isolated local Git workspaces. Its internal native agent runtime has a deterministic mock provider, a configurable OpenAI-compatible Chat Completions provider, and six read-only repository tools, but no agent CLI command. An internal constrained patch-application API is implemented behind interactive approval; there is no general-purpose write tool, shell tool, or validation runner. Planning and reference matching remain heuristic; workspace preparation does not execute repository code or modify source files. The project license has not yet been selected.
+**Hecate is in early implementation.** The CLI supports local inspection, public GitHub repository retrieval, Rust source analysis, open-issue retrieval, heuristic issue-to-code mapping and contribution ranking, evidence-backed draft plans, explicitly approved isolated local Git workspaces, and a `contribute` flow for user-supplied replacement/new-file proposals with full-hash approval. Its native agent runtime has a deterministic mock provider, a configurable OpenAI-compatible Chat Completions provider, and six read-only repository tools, but no agent-run CLI command or model-driven patch generation. Patch application is restricted to validated human-approved operations; there is no general-purpose write tool, shell tool, or validation runner. Planning and reference matching remain heuristic; HECATE does not execute repository code or tests. The project license has not yet been selected.
 
 This repository will evolve alongside the implementation. Design decisions, milestones and limitations should remain visible rather than being hidden behind ambitious claims.
 

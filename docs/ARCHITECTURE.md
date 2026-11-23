@@ -17,7 +17,8 @@ HECATE is a modular Rust CLI application. Deterministic repository access and an
 | `src/agent/` | Provider-independent request/response types, mock and OpenAI-compatible providers, runtime loop, session state, tool definitions/registry/policies, and prepared-workspace readers. |
 | `src/agent/patch.rs`, `src/agent/patch_validation.rs` | Untrusted typed replace/create proposals and read-only validation against prepared workspace identity; calculates results and preview in memory without applying changes. |
 | `src/agent/patch_approval.rs` | Interactive, full-hash confirmation and private, non-serializable, one-use `ApprovedPatch` bound to the validated patch and retained workspace context. |
-| `src/agent/patch_application.rs` | Internal controlled application API that consumes `ApprovedPatch`, stages results and backups, verifies them, applies per-file changes, verifies outputs, and attempts reverse-order rollback with structured recovery reporting. It is not an agent tool or CLI workflow. |
+| `src/agent/patch_application.rs` | Controlled application API that consumes `ApprovedPatch`, stages results and backups, verifies them, applies per-file changes, verifies outputs, and attempts reverse-order rollback with structured recovery reporting. It is not an agent tool. |
+| `src/contribution_cli.rs` | Bounded proposal input and single-process orchestration of validation, review, approval, application, and result reporting. |
 
 The current analysis is Rust-focused. Repository inventory recognizes several language extensions, but module, import, symbol, dependency, architecture, findings, and test-gap analysis is implemented around Rust. Other languages can be inventoried and searched as text by repository tools.
 
@@ -27,7 +28,7 @@ The current finding builder reports unresolved or ambiguous Rust imports, unreso
 
 ```mermaid
 flowchart LR
-    CLI["CLI: inspect / discover / plan / prepare"] --> APP["application.rs"]
+    CLI["CLI: inspect / discover / plan / prepare / contribute"] --> APP["application.rs"]
     APP --> GH["GitHub client and commit-pinned source cache"]
     APP --> INSPECT["local repository inventory"]
     INSPECT --> ANALYSIS["Rust analyzers and typed evidence"]
@@ -35,9 +36,13 @@ flowchart LR
     DISCOVERY --> PLAN["contribution plan"]
     PLAN --> APPROVAL["explicit prepare confirmation"]
     APPROVAL --> WORKSPACE["dedicated clone, branch, plan and manifest"]
+    WORKSPACE --> PROPOSAL["bounded user-supplied proposal"]
+    PROPOSAL --> VALIDATE["read-only patch validation"]
+    VALIDATE --> REVIEW["complete preview + full-hash approval"]
+    REVIEW --> APPLY["controlled application + recovery report"]
 ```
 
-`inspect` accepts a local directory or GitHub repository. `discover` obtains open issues and ranks possible code matches. `plan` investigates one issue and prints a draft plan. `prepare` obtains the current issue/plan, previews the workspace and asks before creating the local clone and branch. None of these commands implements an issue or runs repository build/test code.
+`inspect` accepts a local directory or GitHub repository. `discover` obtains open issues and ranks possible code matches. `plan` investigates one issue and prints a draft plan. `prepare` obtains the current issue/plan, previews the workspace and asks before creating the local clone and branch. `contribute REPOSITORY ISSUE --proposal FILE` performs preparation, bounded proposal loading, validation, complete preview, full-hash interactive approval, and controlled application in one process. The actual `WorkspaceResult` capabilities remain live across the entire operation; the CLI does not reconstruct trust from a workspace path. The command applies only a user-supplied proposal and does not use a model to generate changes or run repository build/test code.
 
 GitHub requests use the blocking `reqwest` client and optional `GITHUB_TOKEN`/`GH_TOKEN`. Source archives are cached by repository and commit; issue data is fetched from the API when requested. Source extraction has archive and expanded-size bounds and skips archive links.
 
@@ -54,12 +59,12 @@ The agent subsystem is currently a library-like internal module in the binary, n
 
 `MockProvider` supports deterministic tests; `OpenAiCompatibleProvider` translates Chat Completions requests and responses behind the same provider interface. The six registered repository tools are read-only and validate the workspace manifest and stored plan before access. See [AGENT_RUNTIME.md](AGENT_RUNTIME.md), [PROVIDERS.md](PROVIDERS.md), and [SECURITY.md](SECURITY.md).
 
-Patch handling is a separate, internal workflow: an untrusted `PatchProposal` is fully validated into a private `ValidatedPatch`; interactive full-hash confirmation produces a non-serializable `ApprovedPatch`; the application layer consumes it by value, stages and verifies results/backups, applies each file operation, then verifies results or reports rollback/recovery. No model tool can invoke this application API, and the CLI does not yet orchestrate it.
+Patch handling follows a trust-gated workflow: an untrusted `PatchProposal` is fully validated into a private `ValidatedPatch`; interactive full-hash confirmation produces a non-serializable `ApprovedPatch`; the application layer consumes it by value, stages and verifies results/backups, applies each file operation, then verifies results or reports rollback/recovery. `contribution_cli.rs` orchestrates these steps. No model tool can invoke the application API, and the model runtime is not part of this CLI workflow.
 
 ## Current boundaries
 
-- No agent CLI command, MCP support, or persistent session store. The configurable provider targets the OpenAI-compatible Chat Completions protocol; other API protocols are not implemented.
-- No arbitrary file-writing tool, patch-generation tool, arbitrary command tool, repository-code execution, or validation runner. The internal patch application module can write only the exact operations in a consumed human-approved `ApprovedPatch`; it is not available to the model or CLI yet.
+- No model-agent CLI command, MCP support, or persistent session store. The configurable provider targets the OpenAI-compatible Chat Completions protocol; other API protocols are not implemented.
+- No arbitrary file-writing tool, model patch-generation tool, arbitrary command tool, repository-code execution, or validation runner. The `contribute` CLI can write only the exact operations in a consumed human-approved `ApprovedPatch`; it is not available to the model.
 - A patch's files are staged and verified before the first target change. Each individual replacement/creation uses a platform-specific operation, but the group is not atomic. Failure triggers guarded reverse-order rollback; failed or unsafe recovery preserves artifacts and is reported. Process termination or machine/power failure can leave partial changes.
 - Discovery and test-gap results are heuristic leads, not confirmation of a defect or absent coverage.
 - A Git clone is workspace isolation from the user's original checkout, not an operating-system security sandbox.

@@ -1,6 +1,7 @@
 pub mod agent;
 mod analysis;
 mod application;
+mod contribution_cli;
 mod discovery;
 mod github;
 mod inspection;
@@ -40,6 +41,17 @@ enum Commands {
         #[arg(long)]
         workspace_dir: Option<std::path::PathBuf>,
     },
+    /// Prepare a workspace, review a user-supplied patch, require approval, and apply it
+    Contribute {
+        repository: String,
+        issue_number: u64,
+        /// Bounded JSON PatchProposal file (schema version 1)
+        #[arg(long)]
+        proposal: std::path::PathBuf,
+        /// Override the HECATE-managed workspace root (also configurable via HECATE_WORKSPACE_DIR)
+        #[arg(long)]
+        workspace_dir: Option<std::path::PathBuf>,
+    },
 }
 
 fn main() {
@@ -75,6 +87,18 @@ fn main() {
             issue_number,
             workspace_dir,
         } => prepare_workspace(&repository, issue_number, workspace_dir.as_deref()),
+        Commands::Contribute {
+            repository,
+            issue_number,
+            proposal,
+            workspace_dir,
+        } => contribute(
+            &repository,
+            issue_number,
+            &proposal,
+            workspace_dir.as_deref(),
+        )
+        .map_err(|error| contribution_cli::safe_cli_error(&error)),
     };
     if let Err(error) = result {
         eprintln!("HECATE: {error}");
@@ -87,9 +111,28 @@ fn prepare_workspace(
     issue_number: u64,
     workspace_root: Option<&Path>,
 ) -> Result<(), String> {
+    prepare_workspace_with_proposal(repository_input, issue_number, workspace_root, true, false)
+        .map(|_| ())
+}
+
+struct PreparedContribution {
+    repository: github::GitHubRepository,
+    plan: planning::ContributionPlan,
+    workspace: workspace::WorkspaceResult,
+}
+
+fn prepare_workspace_with_proposal(
+    repository_input: &str,
+    issue_number: u64,
+    workspace_root: Option<&Path>,
+    display_full_plan: bool,
+    applying_proposal: bool,
+) -> Result<Option<PreparedContribution>, String> {
     println!("Verifying the open issue and generating its contribution plan...");
     let (repository, plan) = application::investigate_github_issue(repository_input, issue_number)?;
-    print_plan(&plan);
+    if display_full_plan {
+        print_plan(&plan);
+    }
     let default_root;
     let root = if let Some(root) = workspace_root {
         root
@@ -99,45 +142,149 @@ fn prepare_workspace(
     };
     let preview = workspace::preview_workspace(&repository, issue_number, root)?;
     println!("\nHECATE — ISOLATED WORKSPACE PREPARATION");
-    println!("Repository: {}", repository.url);
-    println!("Issue: #{} {}", plan.issue_number, plan.issue_title);
-    println!("Base branch: {}", repository.default_branch);
-    println!("New branch: {}", preview.branch);
-    println!("Workspace: {}", preview.path.display());
-    println!("Git checkout: {}", preview.checkout_path.display());
+    println!(
+        "Repository: {}",
+        contribution_cli::safe_cli_error(&repository.url)
+    );
+    println!(
+        "Issue: #{} {}",
+        plan.issue_number,
+        contribution_cli::safe_cli_error(&plan.issue_title)
+    );
+    println!(
+        "Base branch: {}",
+        contribution_cli::safe_cli_error(&repository.default_branch)
+    );
+    println!(
+        "New branch: {}",
+        contribution_cli::safe_cli_error(&preview.branch)
+    );
+    println!(
+        "Workspace: {}",
+        contribution_cli::safe_cli_error(&preview.path.display().to_string())
+    );
+    println!(
+        "Git checkout: {}",
+        contribution_cli::safe_cli_error(&preview.checkout_path.display().to_string())
+    );
     println!(
         "Plan metadata: .hecate/plan-v1.json (version {})",
         workspace::PLAN_SCHEMA_VERSION
     );
-    println!(
-        "\nThis creates a local clone and branch. HECATE will not edit source files, push, or create a pull request."
-    );
-    print!("Create this workspace? [y/N] ");
-    use std::io::Write;
-    std::io::stdout()
-        .flush()
-        .map_err(|error| format!("Could not display confirmation prompt: {error}"))?;
-    let mut response = String::new();
-    std::io::stdin()
-        .read_line(&mut response)
-        .map_err(|error| format!("Could not read confirmation: {error}"))?;
-    if !matches!(response.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
-        println!("Cancelled. No workspace files were created.");
-        return Ok(());
+    if applying_proposal {
+        println!(
+            "\nThis creates a new local clone and branch. HECATE will then validate the supplied proposal, show its complete diff, and require separate full-hash approval before applying it. It will not run tests, commit, push, or create a pull request."
+        );
+    } else {
+        println!(
+            "\nThis creates a local clone and branch. HECATE will not edit source files, push, or create a pull request."
+        );
     }
-
-    let result = workspace::create_workspace(&repository, issue_number, &plan, root, true)?;
+    let mut input = std::io::stdin().lock();
+    let mut output = std::io::stdout().lock();
+    let result = contribution_cli::confirm_and_create_workspace(&mut input, &mut output, || {
+        workspace::create_workspace(&repository, issue_number, &plan, root, true)
+    })?;
+    let Some(result) = result else {
+        return Ok(None);
+    };
     println!("\nWorkspace created successfully.");
-    println!("Branch: {}", result.branch);
-    println!("Checkout: {}", result.checkout_path.display());
+    println!(
+        "Branch: {}",
+        contribution_cli::safe_cli_error(&result.branch)
+    );
+    println!(
+        "Checkout: {}",
+        contribution_cli::safe_cli_error(&result.checkout_path.display().to_string())
+    );
     println!(
         "Workspace metadata: {}",
-        result.path.join(".hecate").display()
+        contribution_cli::safe_cli_error(&result.path.join(".hecate").display().to_string())
     );
-    println!("Base commit: {}", result.commit);
-    println!("Git status: {}", result.git_status);
-    println!("No changes have been made to the cloned source tree.");
-    Ok(())
+    println!(
+        "Base commit: {}",
+        contribution_cli::safe_cli_error(&result.commit)
+    );
+    println!(
+        "Git status: {}",
+        contribution_cli::safe_cli_error(&result.git_status)
+    );
+    if !applying_proposal {
+        println!("No changes have been made to the cloned source tree.");
+    }
+    Ok(Some(PreparedContribution {
+        repository,
+        plan,
+        workspace: result,
+    }))
+}
+
+fn contribute(
+    repository_input: &str,
+    issue_number: u64,
+    proposal_path: &Path,
+    workspace_root: Option<&Path>,
+) -> Result<(), String> {
+    use std::io::IsTerminal;
+
+    github::GitHubClient::parse_repository(repository_input)?;
+    if issue_number == 0 {
+        return Err("Issue number must be greater than zero".into());
+    }
+    let proposal = contribution_cli::load_proposal(proposal_path)?;
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        return Err(
+            "The contribute workflow requires interactive stdin and stdout terminals; no workspace was created".into(),
+        );
+    }
+
+    let Some(prepared) = prepare_workspace_with_proposal(
+        repository_input,
+        issue_number,
+        workspace_root,
+        false,
+        true,
+    )?
+    else {
+        return Ok(());
+    };
+    let context = agent::session::ContributionContext {
+        repository_url: prepared.repository.url.clone(),
+        issue_number,
+        issue_title: prepared.plan.issue_title.clone(),
+        plan: agent::session::ContributionPlanReference {
+            artifact_id: ".hecate/plan-v1.json".into(),
+            repository_url: prepared.plan.repository_url.clone(),
+            issue_number,
+            schema_version: workspace::PLAN_SCHEMA_VERSION,
+            review_status: agent::session::PlanReviewStatus::Approved,
+        },
+    };
+    let session_id = contribution_cli::new_cli_session_id()?;
+    let report = contribution_cli::validate_approve_apply(
+        &prepared.workspace,
+        &context,
+        &proposal,
+        &session_id,
+        |patch, _validator| {
+            contribution_cli::print_review_context(
+                &prepared.repository.url,
+                issue_number,
+                &prepared.plan.issue_title,
+                &prepared.workspace.path,
+                patch,
+            )
+        },
+        agent::patch_approval::approve_interactively,
+        agent::patch_application::apply_approved_patch,
+    )
+    .map_err(|error| {
+        format!(
+            "{error}. Prepared workspace was preserved at {}",
+            prepared.workspace.path.display()
+        )
+    })?;
+    contribution_cli::report_application(&report)
 }
 
 fn print_plan(plan: &planning::ContributionPlan) {

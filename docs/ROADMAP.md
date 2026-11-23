@@ -23,21 +23,21 @@ HECATE validates structured exact-replacement and new-file proposals against a p
 
 This is a read-only validator under a bounded local-CLI threat model. Preparation and Git operations still use paths; checks before and after detect many substitutions but cannot prevent every concurrent replacement. A malicious same-user process with write access to the selected workspace parent is outside the current threat model. Capabilities confine validation reads after acquisition, not workspace preparation. This is not an OS sandbox, and Windows ordinal case-insensitive duplicate detection is not a universal filesystem-equivalence guarantee. See [SECURITY.md](SECURITY.md).
 
-The current CLI provides `inspect`, `discover`, `plan`, and `prepare`. Neither patch approval nor application is wired to the CLI or agent runtime, and no model-driven patch generation exists. MCP support, session persistence, arbitrary write tools, shell tools, code execution, and a repository test runner are not implemented.
+The CLI provides `inspect`, `discover`, `plan`, `prepare`, and `contribute`. The `contribute` workflow handles user-supplied proposals with interactive approval and controlled application; it is not wired to the model runtime, and no model-driven patch generation exists. MCP support, session persistence, arbitrary write tools, shell tools, code execution, and a repository test runner are not implemented.
 
 ## Future work
 
 ### Milestone 4D.2.1 — Approval Foundation (implemented)
 
-Private in-memory approval records bind the exact validated patch and retained workspace, and require interactive full-hash confirmation. No CLI flow is present.
+Private in-memory approval records bind the exact validated patch and retained workspace, and require interactive full-hash confirmation. The `contribute` command uses this foundation without serializing or reconstructing approval authority.
 
 ### Milestone 4D.2.2 — Controlled Patch Application (implemented, internal API)
 
 Consumes the approval once, stages and verifies result and backup files before target changes, performs per-file atomic replace/no-replace operations, verifies final contents, and attempts guarded reverse-order rollback. Multiple operations are not group-atomic. Process/machine interruption can require manual recovery. No shell, code execution, automated tests, commit, push, or PR is included.
 
-### Milestone 4D.2.3 — User-Facing Approval and Application Workflow (future)
+### Milestone 4D.2.3 — User-Facing Approval and Application Workflow (implemented)
 
-Add CLI orchestration that retains the prepared workspace context through validation, preview, approval, application, and reporting. Keep explicit terminal approval; do not introduce automatic approval or model-controlled application.
+`hecate contribute REPOSITORY ISSUE --proposal FILE` prepares a new issue workspace, loads a user-supplied version-1 JSON proposal (8 MiB maximum), validates it, displays the complete escaped preview, requires explicit full-hash terminal approval, applies through the one-use approval API, and reports success, rollback, or recovery status. The prepared capabilities remain in the same process. This does not generate patches with a model or run tests/commands; approval remains mandatory.
 
 ### Milestone 5 — Independent Review and Verification (future)
 

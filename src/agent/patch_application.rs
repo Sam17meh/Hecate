@@ -1,10 +1,9 @@
 //! One-use application of a human-approved, validated patch.
 //!
 //! This is deliberately a narrow file operation layer. It is not an agent tool or a general
-//! filesystem API. Multi-file application is not atomic; failures trigger verified reverse-order
-//! rollback where safe and preserve recovery artifacts otherwise.
-
-#![allow(dead_code)] // No user-facing apply workflow is part of this milestone.
+//! filesystem API. The `contribute` CLI is its only user-facing caller. Multi-file application is
+//! not atomic; failures trigger verified reverse-order rollback where safe and preserve recovery
+//! artifacts otherwise.
 
 use crate::agent::patch::{ValidatedFileChange, ValidatedPatch};
 use crate::agent::patch_approval::{ApprovedPatch, verify_record_binding};
