@@ -128,6 +128,15 @@ hecate discover owner/repo
 
 Discovery retrieves the default-branch source archive and paginated open issues, excludes pull requests, then applies the existing Rust analyzers and deterministic text matching to suggest possible files and symbols. Results include factor scores and matching evidence.
 
+Select an issue number from the discovery results to investigate it and generate a reviewable contribution plan:
+
+```bash
+hecate plan owner/repo 123
+hecate plan https://github.com/owner/repo 123
+```
+
+Planning retrieves the same cached repository snapshot and current open issues, then includes issue metadata, candidate code locations, module/import relationships, applicable heuristic test-gap signals, and relevant README/CONTRIBUTING/docs excerpts. It proposes implementation steps, test recommendations, validation commands, risks, assumptions, and unresolved questions. The command only reads and analyzes repository content; it does not implement the issue or modify the target repository. Review the plan and confirm issue scope before any future implementation.
+
 All issue-to-code mappings and rankings are heuristic suggestions, not confirmed bugs or validated fixes. Current source analysis is Rust-focused. GitHub API rate limits apply to unauthenticated requests; set `GITHUB_TOKEN` or `GH_TOKEN` to use an optional token. Hecate does not modify source code or create pull requests.
 
 ## Planned architecture
@@ -247,7 +256,7 @@ These safeguards are design requirements; they are not yet implemented.
 
 ## Project status
 
-**Hecate is in early implementation.** The Rust CLI supports local inspection, public GitHub repository retrieval, Rust source analysis, open-issue retrieval, heuristic issue-to-code mapping, and contribution ranking. It does not yet research pull requests or discussions, independently validate candidates, or plan and implement changes. The project license has not yet been selected.
+**Hecate is in early implementation.** The Rust CLI supports local inspection, public GitHub repository retrieval, Rust source analysis, open-issue retrieval, heuristic issue-to-code mapping and contribution ranking, and evidence-backed draft plans for selected issues. Planning is deterministic and heuristic; it does not reproduce reports, fetch issue comments, independently validate candidates, or implement changes. The project license has not yet been selected.
 
 This repository will evolve alongside the implementation. Design decisions, milestones and limitations should remain visible rather than being hidden behind ambitious claims.
 

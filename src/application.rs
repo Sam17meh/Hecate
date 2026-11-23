@@ -8,6 +8,7 @@ use crate::analysis::test_gaps::{TestGapAnalysis, analyze_test_gaps};
 use crate::discovery::{ContributionOpportunity, discover_opportunities};
 use crate::github::{GitHubClient, GitHubIssue, GitHubRepository};
 use crate::inspection::{RepositoryInfo, inspect_local};
+use crate::planning::{ContributionPlan, plan_discovered_issue};
 use std::path::Path;
 
 #[derive(Debug)]
@@ -82,4 +83,9 @@ pub fn discover_github_contributions(input: &str) -> Result<DiscoveryReport, Str
         issues,
         opportunities,
     })
+}
+
+pub fn plan_github_issue(input: &str, issue_number: u64) -> Result<ContributionPlan, String> {
+    let report = discover_github_contributions(input)?;
+    plan_discovered_issue(&report, issue_number)
 }

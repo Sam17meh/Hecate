@@ -3,6 +3,7 @@ mod application;
 mod discovery;
 mod github;
 mod inspection;
+mod planning;
 
 use clap::{Parser, Subcommand};
 use std::path::Path;
@@ -24,6 +25,11 @@ enum Commands {
     Inspect { repository: String },
     /// Find and rank contribution opportunities from a public repository's open issues
     Discover { repository: String },
+    /// Investigate a discovered issue and prepare an evidence-backed contribution plan
+    Plan {
+        repository: String,
+        issue_number: u64,
+    },
 }
 
 fn main() {
@@ -47,11 +53,105 @@ fn main() {
             application::discover_github_contributions(&repository)
                 .map(|report| print_discovery(&report))
         }
+        Commands::Plan {
+            repository,
+            issue_number,
+        } => {
+            println!("Fetching repository and investigating issue #{issue_number}...");
+            application::plan_github_issue(&repository, issue_number).map(|plan| print_plan(&plan))
+        }
     };
     if let Err(error) = result {
         eprintln!("HECATE: {error}");
         std::process::exit(1);
     }
+}
+
+fn print_plan(plan: &planning::ContributionPlan) {
+    println!("HECATE — CONTRIBUTION PLAN (FOR HUMAN REVIEW)");
+    println!("Repository: {}", plan.repository_url);
+    println!("Issue: #{} {}", plan.issue_number, plan.issue_title);
+    println!("URL: {}", plan.issue_url);
+    println!(
+        "Labels: {}",
+        if plan.labels.is_empty() {
+            "none".into()
+        } else {
+            plan.labels.join(", ")
+        }
+    );
+    println!(
+        "Created: {} | updated: {} | comments: {}",
+        plan.created_at, plan.updated_at, plan.comments
+    );
+    println!("\nExpected outcome");
+    println!("  {}", plan.expected_outcome);
+    println!("\nProblem interpretation (hypothesis)");
+    println!("  {}", plan.interpretation);
+    println!("\nRelevant code evidence");
+    if plan.locations.is_empty() {
+        println!(
+            "  No relevant code location was identified. Treat the issue as unlocated; inspect manually before implementation."
+        );
+    }
+    for location in &plan.locations {
+        println!(
+            "  {}{}{}",
+            location.file,
+            location
+                .line
+                .map(|line| format!(":{line}"))
+                .unwrap_or_default(),
+            location
+                .symbol
+                .as_ref()
+                .map(|symbol| format!(" ({symbol})"))
+                .unwrap_or_default()
+        );
+        for evidence in &location.evidence {
+            println!("    Evidence: {evidence}");
+        }
+        for relationship in &location.relationships {
+            println!("    Relationship: {relationship}");
+        }
+        for gap in &location.test_gaps {
+            println!("    Test-gap signal (heuristic): {gap}");
+        }
+    }
+    println!("\nRelevant repository documentation");
+    if plan.documents.is_empty() {
+        println!("  No relevant documentation excerpt found (or documentation is unavailable).");
+    }
+    for document in &plan.documents {
+        println!("  {} — {}", document.path, document.excerpt);
+    }
+    println!("\nProposed steps");
+    for (index, step) in plan.steps.iter().enumerate() {
+        println!("  {}. {}", index + 1, step);
+    }
+    println!("\nTests and validation");
+    for test in &plan.test_recommendations {
+        println!("  - {test}");
+    }
+    for command in &plan.validation_commands {
+        println!("  - Run: {command}");
+    }
+    println!("\nRisks and assumptions");
+    for item in &plan.risks_and_assumptions {
+        println!("  - {item}");
+    }
+    println!("\nUnresolved questions");
+    if plan.unresolved_questions.is_empty() {
+        println!(
+            "  None identified from available issue and repository evidence; confirm acceptance criteria with maintainers."
+        );
+    }
+    for question in &plan.unresolved_questions {
+        println!("  - {question}");
+    }
+    println!(
+        "\nThis is a heuristic investigation plan, not a confirmed diagnosis or code change. Review it and select/approve any future implementation yourself."
+    );
 }
 
 fn print_analysis(
@@ -406,4 +506,5 @@ fn print_discovery(report: &application::DiscoveryReport) {
             }
         }
     }
+    println!("\nPlan a selected issue with: hecate plan <repository> <issue-number>");
 }
