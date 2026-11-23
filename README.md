@@ -265,7 +265,7 @@ These safeguards are design requirements; they are not yet implemented.
 
 ## Project status
 
-**Hecate is in early implementation.** The Rust CLI supports local inspection, public GitHub repository retrieval, Rust source analysis, open-issue retrieval, heuristic issue-to-code mapping and contribution ranking, evidence-backed draft plans, and explicitly approved isolated local Git workspaces. Planning is deterministic and heuristic; it does not reproduce reports, fetch issue comments, independently validate candidates, or implement changes. Workspace preparation does not execute repository code or modify source files. The project license has not yet been selected.
+**Hecate is in early implementation.** The Rust CLI supports local inspection, public GitHub repository retrieval, Rust source analysis, open-issue retrieval, heuristic issue-to-code mapping and contribution ranking, evidence-backed draft plans, and explicitly approved isolated local Git workspaces. The codebase also has a native agent-loop foundation with a deterministic mock provider and mock-only tool interface. It has no live model integration or production agent tools, and cannot modify files or run commands through the agent runtime. Planning remains heuristic; workspace preparation does not execute repository code or modify source files. The project license has not yet been selected.
 
 This repository will evolve alongside the implementation. Design decisions, milestones and limitations should remain visible rather than being hidden behind ambitious claims.
 

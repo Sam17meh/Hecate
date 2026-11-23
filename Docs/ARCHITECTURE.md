@@ -280,19 +280,21 @@ SQLite can be introduced in a later milestone.
 
 ## 8. AI Integration Strategy
 
-The AI layer should use a provider-independent interface.
+The runtime is implemented as a native HECATE module with a provider-independent interface. It owns request/response orchestration, context history, registered tool dispatch, execution limits, cancellation checks, permission policy, and typed session state.
 
-The application should not depend directly on one model provider.
+Current boundary:
 
-Initial design:
-- A replaceable LLM provider interface.
-- Structured prompts and responses.
-- Explicit context limits.
-- Token and execution budgets.
-- Error handling and retries.
-- Evidence references attached to generated findings.
+- `ModelProvider` accepts typed conversation and registered tool definitions and returns text, tool calls, and optional token usage.
+- `MockProvider` supplies deterministic responses for tests; no live provider or credentials are included.
+- `ToolRegistry` maps model-visible names to explicitly registered Rust `Tool` implementations. Models cannot dispatch arbitrary functions or shell commands.
+- Tool arguments are validated by their registered tool; unknown names are denied.
+- The default permission policy permits only read-only tools. No production tools are registered in this milestone.
+- Sessions carry repository, issue, and human-approved plan-reference context plus serialized, versioned history and usage.
+- Iteration/tool-call limits, cancellation, malformed responses, provider errors, and tool errors reach explicit terminal states.
 
-Multiple specialised agents can be introduced later as separate responsibilities using the same structured artifacts.
+The runtime is not exposed as a CLI command yet. It is not connected to workspace preparation, real model APIs, filesystem changes, shell execution, validation commands, or autonomous implementation. The existing human-reviewed workspace flow remains separate.
+
+Multiple specialised agents can be considered later using the same structured artifacts, after a real provider and additional tool permissions receive their own review.
 
 ## 9. Security Architecture
 
@@ -316,7 +318,7 @@ The architecture should eventually support:
 - Cross-repository discovery.
 - Issue and pull-request research.
 - Specialised analysis agents.
-- Agent orchestration and checkpoints.
+- Multi-agent orchestration and persistent checkpoints.
 - Isolated implementation worktrees.
 - Test execution and benchmarking.
 - Human-approved contribution preparation.
