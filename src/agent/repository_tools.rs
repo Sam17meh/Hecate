@@ -33,6 +33,30 @@ const MAX_SEARCH_LIMIT: usize = 100;
 const MAX_SYMBOL_RESULTS: usize = 100;
 const MAX_DIFF_BYTES: usize = 256 * 1024;
 const MAX_PATH_BYTES: usize = 4096;
+const GIT_DIFF_EXCLUSIONS: &[&str] = &[
+    ":(exclude,glob)**/.env*",
+    ":(exclude,glob)**/.git-credentials*",
+    ":(exclude,glob)**/credentials",
+    ":(exclude,glob)**/credentials.*",
+    ":(exclude,glob)**/secrets",
+    ":(exclude,glob)**/secrets.*",
+    ":(exclude,glob)**/id_rsa",
+    ":(exclude,glob)**/id_ed25519",
+    ":(exclude,glob)**/known_hosts",
+    ":(exclude,glob)**/.npmrc",
+    ":(exclude,glob)**/.pypirc",
+    ":(exclude,glob)**/.netrc",
+    ":(exclude,glob)**/.aws",
+    ":(exclude,glob)**/.aws/**",
+    ":(exclude,glob)**/.ssh",
+    ":(exclude,glob)**/.ssh/**",
+    ":(exclude,glob)**/service-account.json",
+    ":(exclude,glob)**/*.pem",
+    ":(exclude,glob)**/*.key",
+    ":(exclude,glob)**/*.p12",
+    ":(exclude,glob)**/*.pfx",
+    ":(exclude,glob)**/*.keystore",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RepositoryOperation {
@@ -270,7 +294,7 @@ impl WorkspaceRepositoryTool {
         if metadata.file_type().is_symlink() || !metadata.is_file() || is_excluded(&path) {
             return Err(tool_error(
                 ToolErrorCode::PermissionDenied,
-                "Requested path is not an accessible regular workspace file",
+                "Requested path is not an accessible, unlinked regular workspace file",
             ));
         }
         if metadata.len() > MAX_FILE_BYTES {
@@ -281,7 +305,17 @@ impl WorkspaceRepositoryTool {
         }
         let file = root
             .open(&path)
+            .map_err(|error| tool_error(ToolErrorCode::ExecutionFailed, error.to_string()))?
+            .into_std();
+        let opened_metadata = file
+            .metadata()
             .map_err(|error| tool_error(ToolErrorCode::ExecutionFailed, error.to_string()))?;
+        if !opened_metadata.is_file() || has_multiple_links(&file, &opened_metadata) {
+            return Err(tool_error(
+                ToolErrorCode::PermissionDenied,
+                "Requested file changed to a non-regular or hard-linked file",
+            ));
+        }
         let mut bytes = Vec::with_capacity(metadata.len() as usize);
         file.take(MAX_FILE_BYTES + 1)
             .read_to_end(&mut bytes)
@@ -319,7 +353,7 @@ impl WorkspaceRepositoryTool {
             .and_then(Value::as_bool)
             .unwrap_or(false);
         let limit = optional_usize(arguments, "limit", 50, MAX_SEARCH_LIMIT)?;
-        let (files, mut truncated) = scan_files(root, &context.cancellation)?;
+        let (files, mut truncated, _) = scan_files(root, &context.cancellation)?;
         let query_normalized = if case_sensitive {
             query.to_string()
         } else {
@@ -342,7 +376,8 @@ impl WorkspaceRepositoryTool {
                 continue;
             };
             bytes_scanned = bytes_scanned.saturating_add(content.len() as u64);
-            for (index, line) in content.lines().enumerate() {
+            let redacted_content = redact_sensitive_text(&content);
+            for (index, line) in redacted_content.lines().enumerate() {
                 let haystack = if case_sensitive {
                     line.to_string()
                 } else {
@@ -352,7 +387,7 @@ impl WorkspaceRepositoryTool {
                     matches.push(json!({
                         "path": shorten(&display_path(&file.path), 512),
                         "line": index + 1,
-                        "snippet": shorten(&redact_sensitive_text(line), 240)
+                        "snippet": shorten(line, 240)
                     }));
                     if matches.len() >= limit {
                         truncated = true;
@@ -386,7 +421,7 @@ impl WorkspaceRepositoryTool {
             .map(safe_relative_path)
             .transpose()?;
         let limit = optional_usize(arguments, "limit", 50, MAX_SYMBOL_RESULTS)?;
-        let (files, mut truncated) = scan_files(root, &context.cancellation)?;
+        let (files, mut truncated, _) = scan_files(root, &context.cancellation)?;
         let mut symbols = Vec::new();
         let mut bytes_scanned = 0_u64;
         let mut diagnostics = Vec::new();
@@ -454,7 +489,7 @@ impl WorkspaceRepositoryTool {
             ));
         }
         let limit = optional_usize(arguments, "limit", 50, MAX_SEARCH_LIMIT)?;
-        let (files, mut truncated) = scan_files(root, &context.cancellation)?;
+        let (files, mut truncated, _) = scan_files(root, &context.cancellation)?;
         let mut declarations = Vec::new();
         let mut matches = Vec::new();
         let mut bytes_scanned = 0_u64;
@@ -473,6 +508,7 @@ impl WorkspaceRepositoryTool {
                 continue;
             };
             bytes_scanned = bytes_scanned.saturating_add(content.len() as u64);
+            let redacted_content = redact_sensitive_text(&content);
             if file.path.to_string_lossy().ends_with(".rs") {
                 if let Ok(found) = analyze_rust_file(&content, &display_path(&file.path)) {
                     declarations.extend(
@@ -497,7 +533,7 @@ impl WorkspaceRepositoryTool {
                     }
                 }
             }
-            for (index, line) in content.lines().enumerate() {
+            for (index, line) in redacted_content.lines().enumerate() {
                 for (start, _) in line.match_indices(symbol) {
                     let before = line[..start].chars().next_back();
                     let after = line[start + symbol.len()..].chars().next();
@@ -509,7 +545,7 @@ impl WorkspaceRepositoryTool {
                     matches.push(json!({
                         "path":shorten(&display_path(&file.path), 512),
                         "line":index + 1,
-                        "snippet":shorten(&redact_sensitive_text(line), 240),
+                        "snippet":shorten(line, 240),
                         "match_type":"approximate_textual_identifier",
                         "structurally_verified":false
                     }));
@@ -532,6 +568,7 @@ impl WorkspaceRepositoryTool {
 
     fn read_diff(&self, arguments: &Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         self.validate_context(&context.contribution)?;
+        let root = self.root_dir(&context.contribution)?;
         let git_metadata = std::fs::symlink_metadata(self.checkout.join(".git"))
             .map_err(|error| tool_error(ToolErrorCode::PermissionDenied, error.to_string()))?;
         if git_metadata.file_type().is_symlink() || !git_metadata.is_dir() {
@@ -562,6 +599,12 @@ impl WorkspaceRepositoryTool {
                 "diff.external=",
                 "-c",
                 "core.quotepath=false",
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+            ])
+            .arg(format!("core.attributesFile={}", git_null_device()))
+            .args([
                 "diff",
                 "--no-ext-diff",
                 "--no-textconv",
@@ -570,6 +613,7 @@ impl WorkspaceRepositoryTool {
                 "HEAD",
                 "--",
             ])
+            .args(GIT_DIFF_EXCLUSIONS)
             .current_dir(&self.checkout)
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GIT_CONFIG_NOSYSTEM", "1")
@@ -577,6 +621,7 @@ impl WorkspaceRepositoryTool {
             .env("GIT_OPTIONAL_LOCKS", "0")
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
+        ensure_no_hardlinked_workspace_files(&root, &context.cancellation)?;
         let mut child = command
             .spawn()
             .map_err(|error| tool_error(ToolErrorCode::ExecutionFailed, error.to_string()))?;
@@ -771,6 +816,7 @@ struct ScanStats {
     files: usize,
     entries: usize,
     truncated: bool,
+    hard_links_found: bool,
 }
 
 fn collect_files(
@@ -829,12 +875,26 @@ fn collect_files(
                 stats.truncated = true;
                 return Ok(());
             }
-            let metadata = root
-                .symlink_metadata(&relative)
+            let open_file = match root.open(&relative) {
+                Ok(file) => file.into_std(),
+                Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => continue,
+                Err(error) => {
+                    return Err(tool_error(
+                        ToolErrorCode::ExecutionFailed,
+                        error.to_string(),
+                    ));
+                }
+            };
+            let open_metadata = open_file
+                .metadata()
                 .map_err(|error| tool_error(ToolErrorCode::ExecutionFailed, error.to_string()))?;
+            if has_multiple_links(&open_file, &open_metadata) {
+                stats.hard_links_found = true;
+                continue;
+            }
             output.push(ListedFile {
                 path: relative,
-                size: metadata.len(),
+                size: open_metadata.len(),
             });
         }
     }
@@ -844,7 +904,7 @@ fn collect_files(
 fn scan_files(
     root: &Dir,
     cancellation: &CancellationToken,
-) -> Result<(Vec<ListedFile>, bool), ToolError> {
+) -> Result<(Vec<ListedFile>, bool, bool), ToolError> {
     let mut files = Vec::new();
     let mut stats = ScanStats::default();
     collect_files(
@@ -856,7 +916,133 @@ fn scan_files(
         0,
     )?;
     files.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok((files, stats.truncated))
+    Ok((
+        files,
+        stats.truncated || stats.hard_links_found,
+        stats.hard_links_found,
+    ))
+}
+
+fn has_multiple_links(file: &std::fs::File, metadata: &std::fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as StdMetadataExt;
+        metadata.nlink() > 1
+    }
+    #[cfg(windows)]
+    {
+        let _ = metadata;
+        use std::os::windows::io::AsRawHandle;
+        let mut information: windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION =
+            unsafe { std::mem::zeroed() };
+        let success = unsafe {
+            windows_sys::Win32::Storage::FileSystem::GetFileInformationByHandle(
+                file.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE,
+                &mut information,
+            )
+        };
+        success == 0 || information.nNumberOfLinks > 1
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (file, metadata);
+        false
+    }
+}
+
+fn ensure_no_hardlinked_workspace_files(
+    root: &Dir,
+    cancellation: &CancellationToken,
+) -> Result<(), ToolError> {
+    fn visit(
+        root: &Dir,
+        directory: &Path,
+        depth: usize,
+        entries_seen: &mut usize,
+        cancellation: &CancellationToken,
+    ) -> Result<(), ToolError> {
+        if depth > 64 || *entries_seen >= MAX_SCAN_ENTRIES {
+            return Err(tool_error(
+                ToolErrorCode::PermissionDenied,
+                "Workspace is too large to verify safely before reading its Git diff",
+            ));
+        }
+        if cancellation.is_cancelled() {
+            return Err(cancelled_error());
+        }
+        let read_path = if directory.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            directory
+        };
+        let entries = root
+            .read_dir(read_path)
+            .map_err(|error| tool_error(ToolErrorCode::ExecutionFailed, error.to_string()))?;
+        for entry in entries {
+            if cancellation.is_cancelled() {
+                return Err(cancelled_error());
+            }
+            *entries_seen += 1;
+            if *entries_seen > MAX_SCAN_ENTRIES {
+                return Err(tool_error(
+                    ToolErrorCode::PermissionDenied,
+                    "Workspace is too large to verify safely before reading its Git diff",
+                ));
+            }
+            let entry = entry
+                .map_err(|error| tool_error(ToolErrorCode::ExecutionFailed, error.to_string()))?;
+            let relative = directory.join(entry.file_name());
+            if is_internal_metadata_path(&relative) {
+                continue;
+            }
+            let file_type = entry
+                .file_type()
+                .map_err(|error| tool_error(ToolErrorCode::ExecutionFailed, error.to_string()))?;
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
+                visit(root, &relative, depth + 1, entries_seen, cancellation)?;
+            } else if file_type.is_file() {
+                let file = match root.open(&relative) {
+                    Ok(file) => file.into_std(),
+                    Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => continue,
+                    Err(error) => {
+                        return Err(tool_error(
+                            ToolErrorCode::ExecutionFailed,
+                            error.to_string(),
+                        ));
+                    }
+                };
+                let opened_metadata = file.metadata().map_err(|error| {
+                    tool_error(ToolErrorCode::ExecutionFailed, error.to_string())
+                })?;
+                if has_multiple_links(&file, &opened_metadata) {
+                    return Err(tool_error(
+                        ToolErrorCode::PermissionDenied,
+                        "Git diff is disabled while the workspace contains hard-linked files outside its trust boundary",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    let mut entries_seen = 0;
+    visit(root, Path::new(""), 0, &mut entries_seen, cancellation)
+}
+
+fn is_internal_metadata_path(path: &Path) -> bool {
+    path.components().any(|component| {
+        component
+            .as_os_str()
+            .to_string_lossy()
+            .eq_ignore_ascii_case(".git")
+            || component
+                .as_os_str()
+                .to_string_lossy()
+                .eq_ignore_ascii_case(".hecate")
+    })
 }
 
 fn read_text_file(root: &Dir, path: &Path, max_bytes: u64) -> Result<Option<String>, ToolError> {
@@ -867,8 +1053,21 @@ fn read_text_file(root: &Dir, path: &Path, max_bytes: u64) -> Result<Option<Stri
         return Ok(None);
     }
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
-    root.open(path)
-        .and_then(|file| file.take(max_bytes + 1).read_to_end(&mut bytes))
+    let file = root
+        .open(path)
+        .map_err(|error| tool_error(ToolErrorCode::ExecutionFailed, error.to_string()))?
+        .into_std();
+    let opened_metadata = file
+        .metadata()
+        .map_err(|error| tool_error(ToolErrorCode::ExecutionFailed, error.to_string()))?;
+    if !opened_metadata.is_file()
+        || has_multiple_links(&file, &opened_metadata)
+        || opened_metadata.len() > max_bytes
+    {
+        return Ok(None);
+    }
+    file.take(max_bytes + 1)
+        .read_to_end(&mut bytes)
         .map_err(|error| tool_error(ToolErrorCode::ExecutionFailed, error.to_string()))?;
     if bytes.len() as u64 > max_bytes {
         return Ok(None);
@@ -895,6 +1094,13 @@ fn safe_relative_path(value: &str) -> Result<PathBuf, ToolError> {
                 "Empty path components, `.` and parent traversal are denied",
             ));
         }
+        #[cfg(windows)]
+        if is_windows_alias_component(component) {
+            return Err(tool_error(
+                ToolErrorCode::PermissionDenied,
+                "Windows trailing-dot, trailing-space, and device-name paths are denied",
+            ));
+        }
         normalized.push(component);
     }
     if normalized.as_os_str().is_empty() || is_excluded(&normalized) {
@@ -904,6 +1110,31 @@ fn safe_relative_path(value: &str) -> Result<PathBuf, ToolError> {
         ));
     }
     Ok(normalized)
+}
+
+#[cfg(windows)]
+fn is_windows_alias_component(component: &str) -> bool {
+    if component.ends_with(['.', ' ']) {
+        return true;
+    }
+    let stem = component
+        .trim_end_matches(['.', ' '])
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches(['.', ' '])
+        .to_ascii_uppercase();
+    matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$" | "CLOCK$"
+    ) || ["COM", "LPT"].iter().any(|prefix| {
+        stem.strip_prefix(prefix).is_some_and(|suffix| {
+            matches!(
+                suffix,
+                "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+            )
+        })
+    })
 }
 
 fn is_excluded(path: &Path) -> bool {
@@ -1062,6 +1293,7 @@ fn shorten(value: &str, max_chars: usize) -> String {
 
 fn redact_sensitive_text(value: &str) -> String {
     let mut private_key = false;
+    let mut sensitive_block_indent = None;
     let mut output = String::with_capacity(value.len());
     for segment in value.split_inclusive('\n') {
         let (line, ending) = if let Some(line) = segment.strip_suffix('\n') {
@@ -1074,6 +1306,20 @@ fn redact_sensitive_text(value: &str) -> String {
             (segment, "")
         };
         let lower = line.to_ascii_lowercase();
+        let indent = line
+            .bytes()
+            .take_while(|byte| matches!(byte, b' ' | b'\t'))
+            .count();
+        let mut nested_sensitive_value = false;
+        if let Some(block_indent) = sensitive_block_indent {
+            if line.trim().is_empty() {
+                // Keep blank lines while retaining the sensitive block until its next key.
+            } else if indent > block_indent {
+                nested_sensitive_value = true;
+            } else {
+                sensitive_block_indent = None;
+            }
+        }
         if lower.contains("-----begin ") && lower.contains("private key-----") {
             private_key = true;
         }
@@ -1095,6 +1341,17 @@ fn redact_sensitive_text(value: &str) -> String {
         ]
         .iter()
         .any(|needle| lower.contains(needle) && (line.contains('=') || line.contains(':')));
+        if sensitive_assignment {
+            if let Some(separator) = line.find([':', '=']) {
+                let value = line[separator + 1..]
+                    .split_once('#')
+                    .map_or(&line[separator + 1..], |(value, _)| value)
+                    .trim();
+                if value.is_empty() || value.starts_with(['|', '>', '{', '[']) {
+                    sensitive_block_indent = Some(indent);
+                }
+            }
+        }
         let known_token = [
             "ghp_",
             "gho_",
@@ -1108,7 +1365,7 @@ fn redact_sensitive_text(value: &str) -> String {
         ]
         .iter()
         .any(|needle| lower.contains(needle));
-        if private_key || sensitive_assignment || known_token {
+        if private_key || nested_sensitive_value || sensitive_assignment || known_token {
             output.push_str("[REDACTED SENSITIVE LINE]");
         } else {
             output.push_str(line);
@@ -1372,6 +1629,45 @@ mod tests {
                 .ends_with("ordinary text\n")
         );
         fs::write(
+            fixture.checkout.join("config.yaml"),
+            "api_token: |- # multiline token\n  value: multiline-secret-value\nordinary: visible\n",
+        )
+        .unwrap();
+        let config = invoke(&fixture, "read_file", json!({"path":"config.yaml"})).unwrap();
+        let config_content = config.output["content"].as_str().unwrap();
+        assert!(!config_content.contains("multiline-secret-value"));
+        assert!(config_content.contains("ordinary: visible"));
+        let secret_search = invoke(
+            &fixture,
+            "search_code",
+            json!({"query":"multiline-secret-value"}),
+        )
+        .unwrap();
+        assert!(
+            secret_search.output["matches"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        let secret_reference =
+            invoke(&fixture, "find_references", json!({"symbol":"value"})).unwrap();
+        assert!(
+            !serde_json::to_string(&secret_reference.output)
+                .unwrap()
+                .contains("multiline-secret-value")
+        );
+        fs::write(
+            fixture.checkout.join(".env"),
+            "unstructured-private-value-that-must-not-leak\n",
+        )
+        .unwrap();
+        let diff = invoke(&fixture, "read_diff", json!({})).unwrap();
+        assert!(
+            !serde_json::to_string(&diff.output)
+                .unwrap()
+                .contains("unstructured-private-value-that-must-not-leak")
+        );
+        fs::write(
             fixture.checkout.join("large.txt"),
             vec![b'x'; (MAX_FILE_BYTES + 1) as usize],
         )
@@ -1381,6 +1677,27 @@ mod tests {
                 .unwrap_err()
                 .code,
             ToolErrorCode::InvalidArguments
+        );
+
+        let outside = fixture.root.join("outside-credential.txt");
+        fs::write(&outside, "outside-hardlink-secret").unwrap();
+        fs::hard_link(&outside, fixture.checkout.join("linked-secret.txt")).unwrap();
+        assert_eq!(
+            invoke(&fixture, "read_file", json!({"path":"linked-secret.txt"}))
+                .unwrap_err()
+                .code,
+            ToolErrorCode::PermissionDenied
+        );
+        let search = invoke(
+            &fixture,
+            "search_code",
+            json!({"query":"outside-hardlink-secret"}),
+        )
+        .unwrap();
+        assert!(search.output["matches"].as_array().unwrap().is_empty());
+        assert_eq!(
+            invoke(&fixture, "read_diff", json!({})).unwrap_err().code,
+            ToolErrorCode::PermissionDenied
         );
         fixture.cleanup();
     }
@@ -1445,14 +1762,41 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn rejects_symlink_escape_from_workspace() {
+    fn rejects_windows_junction_escape_from_workspace() {
         let fixture = Fixture::new();
-        let outside = fixture.root.join("outside.txt");
-        fs::write(&outside, "outside secret").unwrap();
-        if std::os::windows::fs::symlink_file(&outside, fixture.checkout.join("escape.txt")).is_ok()
-        {
+        let outside_dir = fixture.root.join("outside-dir");
+        fs::create_dir_all(&outside_dir).unwrap();
+        fs::write(outside_dir.join("private.txt"), "outside directory secret").unwrap();
+        let junction = fixture.checkout.join("linked-dir");
+        let output = Command::new("cmd.exe")
+            .arg("/C")
+            .arg("mklink")
+            .arg("/J")
+            .arg(&junction)
+            .arg(&outside_dir)
+            .output();
+        if output.is_ok_and(|output| output.status.success()) {
+            assert!(
+                invoke(
+                    &fixture,
+                    "read_file",
+                    json!({"path":"linked-dir/private.txt"})
+                )
+                .is_err()
+            );
+            let files = invoke(&fixture, "list_files", json!({})).unwrap();
+            assert!(!files.output.to_string().contains("private.txt"));
+        }
+        fixture.cleanup();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_windows_path_aliases_to_git_metadata_and_devices() {
+        let fixture = Fixture::new();
+        for path in [".git./config", ".git /config", "NUL", "CON.txt", "COM1"] {
             assert_eq!(
-                invoke(&fixture, "read_file", json!({"path":"escape.txt"}))
+                invoke(&fixture, "read_file", json!({"path":path}))
                     .unwrap_err()
                     .code,
                 ToolErrorCode::PermissionDenied

@@ -478,6 +478,7 @@ dependencies = [
  "toml",
  "tree-sitter",
  "tree-sitter-rust",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
