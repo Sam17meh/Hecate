@@ -2,13 +2,15 @@
 
 ## Scope today
 
-`src/agent/` owns a provider-independent loop, typed session state, a registered tool system, and six read-only repository tools. This runtime is not currently invoked by `main.rs`; there is no `hecate agent` command, real model provider, or persisted session workflow.
+`src/agent/` owns a provider-independent loop, typed session state, a registered tool system, and six read-only repository tools. It includes a deterministic mock and an OpenAI-compatible Chat Completions provider. This runtime is not currently invoked by `main.rs`; there is no `hecate agent` command or persisted session workflow.
 
 ## Request and response contract
 
 `ModelProvider::complete` accepts a `ModelRequest` containing the conversation and the registered `ToolDefinition`s. It returns a `ModelResponse` with optional text, zero or more `ToolCallRequest`s, and optional `TokenUsage`, or a typed `ProviderError`. Provider-specific transport and payload handling belong in provider implementations, not in the runtime.
 
-The only implementation is `MockProvider`. It records requests and returns scripted responses in order, making runtime tests deterministic without network access. Exhausting its scripted responses produces `MockExhausted`.
+`MockProvider` records requests and returns scripted responses in order, making runtime tests deterministic without network access. Exhausting its scripted responses produces `MockExhausted`. `OpenAiCompatibleProvider` maps the same typed contract to the Chat Completions HTTP protocol; its configuration and transport limits are described in [PROVIDERS.md](PROVIDERS.md).
+
+`ModelProvider` also provides an optional sanitization contract with identity defaults. A provider with a private credential can override it. `AgentRuntime` applies that policy to existing session content before validation/provider calls, model responses before recording, and structured tool results/errors before adding them to session history. The OpenAI-compatible provider independently sanitizes direct outbound requests. This protects exact credential matches in runtime-managed state; it is not general secret detection.
 
 ## Runtime loop
 
@@ -22,6 +24,8 @@ The only implementation is `MockProvider`. It records requests and returns scrip
 6. Dispatches registered tools, records results/errors in session history, then requests the next response.
 
 Default limits are 8 provider round trips and 16 tool calls. `CancellationToken` is checked around provider responses and tool dispatch. A synchronous provider call itself cannot be interrupted; cancellation is noticed after it returns. Provider, malformed-response, and tool errors fail the session; cancellation and limits have explicit terminal statuses. The runtime does not retry failures indefinitely.
+
+The provider accepts only one completed Chat Completions choice with a supported `finish_reason`. `stop` requires ordinary text; `tool_calls` requires a valid nonempty tool-call list. `length` and `content_filter` become typed provider errors; missing, unknown, or inconsistent reasons are rejected before the runtime can dispatch calls.
 
 ## Tools and permissions
 
@@ -45,5 +49,5 @@ When extending this subsystem:
 - Register only narrowly scoped tools with explicit schemas, Rust-side validation, permission levels, and bounded outputs.
 - Default unknown tools and new permission categories to denial.
 - Preserve batch preflight, call/iteration limits, cancellation checks, and terminal session states.
-- Test with `MockProvider` and temporary tools/workspaces; do not require a live API.
-- Do not add writes, shell/process execution, repository validation, or a live provider as incidental runtime changes. Each needs its own threat model and approval design.
+- Test runtime logic with `MockProvider` and temporary tools/workspaces. Test HTTP mapping with a local deterministic server; automated tests must not require a live API or credentials.
+- Keep writes, shell/process execution, repository validation, and provider transport details out of the runtime loop. Any future write or execution capability needs a separate threat model and approval design.

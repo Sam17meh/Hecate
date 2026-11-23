@@ -2,6 +2,10 @@
 
 HECATE processes untrusted repository source, documentation, and issue text. Current analysis is static: the CLI does not run repository build scripts or tests. The agent repository tools are read-only. Neither a local clone nor a dedicated workspace is an OS-level sandbox.
 
+The native runtime includes an OpenAI-compatible Chat Completions provider. Provider credentials are configured through `HECATE_API_KEY` and used as an Authorization bearer value. Exact matches are removed from session content, tool results, provider responses, and outgoing conversation content before runtime-managed history is retained or sent. This is accidental-exposure defense, not complete secret detection or a substitute for secret management; a caller can create a session containing a key before the runtime receives it, and unknown secret formats may evade repository-tool heuristics. Provider errors are deliberately generic. HTTPS is required for non-loopback endpoints, redirects are disabled, requests have bounded sizes, and synchronous HTTP requests have a configured timeout and bounded response body. Provider output remains untrusted and is subject to the same runtime tool validation and permission policy as any other model response.
+
+Conversation context, repository excerpts, tool definitions, tool-call arguments, and tool results are sent to the configured model provider. Configure only a provider trusted with that repository data. HECATE currently has no user-facing agent CLI or provider data-disclosure/consent workflow.
+
 ## Workspace approval and plan validation
 
 `prepare` first retrieves/analyzes GitHub data (which may populate HECATE's source cache), then prints the repository, issue, planned workspace, branch, and plan metadata and requires an affirmative terminal response before creating the contribution workspace. It reserves a new issue-specific workspace, clones the public repository, creates `hecate/issue-<number>` at the analyzed commit, and stores a versioned plan and audit manifest in `.hecate/`. Existing workspaces are refused rather than overwritten; failures preserve the reserved directory for inspection.

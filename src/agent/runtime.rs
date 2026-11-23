@@ -105,6 +105,7 @@ impl<P: ModelProvider> AgentRuntime<P> {
         session: &mut AgentSession,
         cancellation: &CancellationToken,
     ) -> Result<(), RuntimeError> {
+        sanitize_session(&self.provider, session);
         session
             .validate()
             .map_err(|error| RuntimeError::InvalidSession(error.to_string()))?;
@@ -137,10 +138,14 @@ impl<P: ModelProvider> AgentRuntime<P> {
                 tools: self.tools.definitions(),
             };
             session.usage.model_iterations += 1;
-            let response = match self.provider.complete(request) {
+            let mut response = match self.provider.complete(request) {
                 Ok(response) => response,
-                Err(error) => return Err(fail_session(session, RuntimeError::Provider(error))),
+                Err(mut error) => {
+                    error.message = self.provider.sanitize_untrusted_text(&error.message);
+                    return Err(fail_session(session, RuntimeError::Provider(error)));
+                }
             };
+            sanitize_response(&self.provider, &mut response);
             if let Some(usage) = &response.usage {
                 session.usage.tokens.add_assign(usage);
             }
@@ -191,6 +196,7 @@ impl<P: ModelProvider> AgentRuntime<P> {
             }
 
             if let Some((call, error)) = self.preflight_calls(session, &response.tool_calls) {
+                let error = sanitize_tool_error(&self.provider, error);
                 let runtime_error = RuntimeError::ToolCall {
                     call_id: call.id.clone(),
                     error: error.clone(),
@@ -210,9 +216,12 @@ impl<P: ModelProvider> AgentRuntime<P> {
                     return Ok(());
                 }
                 session.usage.tool_calls += 1;
-                let tool_result = self
-                    .tools
-                    .execute(&call, self.policy.as_ref(), &tool_context);
+                let tool_result = self.tools.execute_with_sanitizer(
+                    &call,
+                    self.policy.as_ref(),
+                    &tool_context,
+                    |output| self.provider.sanitize_untrusted_value(output),
+                );
                 if cancellation.is_cancelled() {
                     session.record_tool_call(
                         call,
@@ -225,6 +234,7 @@ impl<P: ModelProvider> AgentRuntime<P> {
                 match tool_result {
                     Ok(result) => session.record_tool_call(call, Ok(result)),
                     Err(error) => {
+                        let error = sanitize_tool_error(&self.provider, error);
                         let runtime_error = RuntimeError::ToolCall {
                             call_id: call.id.clone(),
                             error: error.clone(),
@@ -274,6 +284,70 @@ impl<P: ModelProvider> AgentRuntime<P> {
         }
         None
     }
+}
+
+fn sanitize_session<P: ModelProvider>(provider: &P, session: &mut AgentSession) {
+    sanitize_text(provider, &mut session.session_id);
+    sanitize_text(provider, &mut session.context.repository_url);
+    sanitize_text(provider, &mut session.context.issue_title);
+    sanitize_text(provider, &mut session.context.plan.artifact_id);
+    sanitize_text(provider, &mut session.context.plan.repository_url);
+    for message in &mut session.messages {
+        if let Some(content) = &mut message.content {
+            sanitize_text(provider, content);
+        }
+        if let Some(call_id) = &mut message.tool_call_id {
+            sanitize_text(provider, call_id);
+        }
+        for call in &mut message.tool_calls {
+            sanitize_call(provider, call);
+        }
+    }
+    for record in &mut session.tool_calls {
+        sanitize_call(provider, &mut record.call);
+        if let Some(result) = &mut record.result {
+            provider.sanitize_untrusted_value(&mut result.output);
+        }
+        if let Some(error) = &mut record.error {
+            sanitize_text(provider, error);
+        }
+    }
+    if let Some(response) = &mut session.final_response {
+        sanitize_text(provider, response);
+    }
+    if let Some(failure) = &mut session.failure {
+        sanitize_text(provider, failure);
+    }
+}
+
+fn sanitize_response<P: ModelProvider>(
+    provider: &P,
+    response: &mut crate::agent::provider::ModelResponse,
+) {
+    if let Some(content) = &mut response.content {
+        sanitize_text(provider, content);
+    }
+    for call in &mut response.tool_calls {
+        sanitize_call(provider, call);
+    }
+}
+
+fn sanitize_call<P: ModelProvider>(
+    provider: &P,
+    call: &mut crate::agent::provider::ToolCallRequest,
+) {
+    sanitize_text(provider, &mut call.id);
+    sanitize_text(provider, &mut call.name);
+    provider.sanitize_untrusted_value(&mut call.arguments);
+}
+
+fn sanitize_text<P: ModelProvider>(provider: &P, text: &mut String) {
+    *text = provider.sanitize_untrusted_text(text);
+}
+
+fn sanitize_tool_error<P: ModelProvider>(provider: &P, mut error: ToolError) -> ToolError {
+    sanitize_text(provider, &mut error.message);
+    error
 }
 
 fn fail_session(session: &mut AgentSession, error: RuntimeError) -> RuntimeError {

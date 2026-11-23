@@ -1396,8 +1396,10 @@ fn cancelled_error() -> ToolError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::openai_compatible::{OpenAiCompatibleConfig, OpenAiCompatibleProvider};
     use crate::agent::provider::{MockProvider, ModelResponse, ToolCallRequest};
-    use crate::agent::runtime::{AgentRuntime, ExecutionLimits};
+    use crate::agent::provider_test_support::{MockHttpResponse, MockHttpServer};
+    use crate::agent::runtime::{AgentRuntime, CancellationToken, ExecutionLimits};
     use crate::agent::session::{AgentSession, ContributionPlanReference, PlanReviewStatus};
     use crate::planning::ContributionPlan;
     use crate::workspace::{create_workspace_from_source_for_tests, preview_workspace_for_tests};
@@ -1576,6 +1578,97 @@ mod tests {
             .run(&mut session, &CancellationToken::default())
             .unwrap();
         session
+    }
+
+    fn api_message(message: Value, usage: Option<Value>) -> MockHttpResponse {
+        let finish_reason = if message
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .is_some_and(|calls| !calls.is_empty())
+        {
+            "tool_calls"
+        } else {
+            "stop"
+        };
+        let mut response = json!({"choices":[{"message":message,"finish_reason":finish_reason}]});
+        if let Some(usage) = usage {
+            response["usage"] = usage;
+        }
+        MockHttpResponse::json(200, response.to_string())
+    }
+
+    fn api_tool_call(id: &str, name: &str, arguments: Value) -> MockHttpResponse {
+        api_message(
+            json!({
+                "role":"assistant",
+                "content":null,
+                "tool_calls":[{
+                    "id":id,
+                    "type":"function",
+                    "function":{"name":name,"arguments":arguments.to_string()}
+                }]
+            }),
+            Some(json!({"prompt_tokens":12,"completion_tokens":4})),
+        )
+    }
+
+    fn api_request_body(request: &[u8]) -> Value {
+        let request = String::from_utf8(request.to_vec()).unwrap();
+        let body_start = request.find("\r\n\r\n").unwrap() + 4;
+        serde_json::from_str(&request[body_start..]).unwrap()
+    }
+
+    fn run_with_http_provider(
+        fixture: &Fixture,
+        server: &MockHttpServer,
+        limits: ExecutionLimits,
+    ) -> Result<AgentSession, crate::agent::runtime::RuntimeError> {
+        let (session, result) = run_with_http_provider_state(fixture, server, limits);
+        result.map(|()| session)
+    }
+
+    fn run_with_http_provider_state(
+        fixture: &Fixture,
+        server: &MockHttpServer,
+        limits: ExecutionLimits,
+    ) -> (
+        AgentSession,
+        Result<(), crate::agent::runtime::RuntimeError>,
+    ) {
+        run_with_http_provider_state_and_key(
+            fixture,
+            server,
+            limits,
+            "test-integration-key",
+            "Investigate the approved contribution plan using read-only repository tools.",
+        )
+    }
+
+    fn run_with_http_provider_state_and_key(
+        fixture: &Fixture,
+        server: &MockHttpServer,
+        limits: ExecutionLimits,
+        api_key: &str,
+        initial_prompt: &str,
+    ) -> (
+        AgentSession,
+        Result<(), crate::agent::runtime::RuntimeError>,
+    ) {
+        let provider = OpenAiCompatibleProvider::new(
+            OpenAiCompatibleConfig::new(api_key, &server.base_url, "hecate-test-model").unwrap(),
+        )
+        .unwrap();
+        let registry =
+            WorkspaceRepositoryTools::register(&fixture.checkout, &fixture.context).unwrap();
+        let mut runtime = AgentRuntime::new(provider, registry, limits);
+        let mut session = AgentSession::new(
+            "http-provider-integration",
+            fixture.context.clone(),
+            initial_prompt,
+        )
+        .unwrap();
+        let result = runtime.run(&mut session, &CancellationToken::default());
+        (session, result)
     }
 
     #[test]
@@ -1890,6 +1983,311 @@ mod tests {
             crate::agent::session::AgentStatus::Completed
         );
         assert_eq!(session.tool_calls.len(), 1);
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn real_provider_round_trips_read_only_file_listing_through_agent_runtime() {
+        let fixture = Fixture::new();
+        let server = MockHttpServer::start(vec![
+            api_tool_call("list-1", "list_files", json!({"limit":10})),
+            api_message(
+                json!({"role":"assistant","content":"The workspace contains README.md and Rust source under src/."}),
+                Some(json!({"prompt_tokens":18,"completion_tokens":9})),
+            ),
+        ]);
+        let session =
+            run_with_http_provider(&fixture, &server, ExecutionLimits::default()).unwrap();
+        assert_eq!(
+            session.status,
+            crate::agent::session::AgentStatus::Completed
+        );
+        assert_eq!(
+            session.final_response.as_deref(),
+            Some("The workspace contains README.md and Rust source under src/.")
+        );
+        assert_eq!(session.tool_calls.len(), 1);
+        assert_eq!(session.tool_calls[0].call.name, "list_files");
+        assert!(
+            session.tool_calls[0].result.as_ref().unwrap().output["files"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|file| file["path"] == "README.md")
+        );
+        assert_eq!(session.usage.model_iterations, 2);
+        assert_eq!(session.usage.tool_calls, 1);
+        assert_eq!(session.usage.tokens.input_tokens, 30);
+        assert_eq!(session.usage.tokens.output_tokens, 13);
+
+        let requests = server.requests();
+        assert_eq!(requests.len(), 2);
+        let second_request = api_request_body(&requests[1]);
+        let messages = second_request["messages"].as_array().unwrap();
+        assert_eq!(messages[messages.len() - 2]["role"], "assistant");
+        assert_eq!(
+            messages[messages.len() - 2]["tool_calls"][0]["id"],
+            "list-1"
+        );
+        assert_eq!(messages[messages.len() - 1]["role"], "tool");
+        assert_eq!(messages[messages.len() - 1]["tool_call_id"], "list-1");
+        assert!(
+            messages[messages.len() - 1]["content"]
+                .as_str()
+                .unwrap()
+                .contains("README.md")
+        );
+        assert_eq!(second_request["tools"].as_array().unwrap().len(), 6);
+        server.finish();
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn real_provider_runs_multiple_repository_tools_over_successive_round_trips() {
+        let fixture = Fixture::new();
+        let server = MockHttpServer::start(vec![
+            api_tool_call("list-1", "list_files", json!({"limit":10})),
+            api_tool_call("read-2", "read_file", json!({"path":"README.md"})),
+            api_message(
+                json!({"role":"assistant","content":"The README documents this repository."}),
+                None,
+            ),
+        ]);
+        let session =
+            run_with_http_provider(&fixture, &server, ExecutionLimits::default()).unwrap();
+        assert_eq!(
+            session.status,
+            crate::agent::session::AgentStatus::Completed
+        );
+        assert_eq!(session.tool_calls.len(), 2);
+        assert_eq!(session.tool_calls[0].call.id, "list-1");
+        assert_eq!(session.tool_calls[1].call.id, "read-2");
+        assert_eq!(
+            session.tool_calls[1].result.as_ref().unwrap().output["path"],
+            "README.md"
+        );
+        assert_eq!(session.usage.model_iterations, 3);
+        assert_eq!(session.usage.tool_calls, 2);
+        assert_eq!(
+            session.final_response.as_deref(),
+            Some("The README documents this repository.")
+        );
+        let requests = server.requests();
+        assert_eq!(requests.len(), 3);
+        let third_request = api_request_body(&requests[2]);
+        let messages = third_request["messages"].as_array().unwrap();
+        assert_eq!(messages[messages.len() - 1]["tool_call_id"], "read-2");
+        assert!(
+            messages[messages.len() - 1]["content"]
+                .as_str()
+                .unwrap()
+                .contains("Repository documentation.")
+        );
+        server.finish();
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn exact_provider_key_is_removed_from_tool_output_session_and_next_request() {
+        let fixture = Fixture::new();
+        let api_key = "Z9kW7mN2pQ5xR8vC";
+        let partial_key = "Z9kW7mN2pQ5x";
+        fs::write(
+            fixture.checkout.join("README.md"),
+            format!(
+                "const NOTE: &str = \"ordinary text {api_key}\";\nconst PREFIX: &str = \"{partial_key}\";\n"
+            ),
+        )
+        .unwrap();
+        let server = MockHttpServer::start(vec![
+            api_tool_call("read-1", "read_file", json!({"path":"README.md"})),
+            api_message(json!({"role":"assistant","content":"Read complete."}), None),
+        ]);
+        let (session, result) = run_with_http_provider_state_and_key(
+            &fixture,
+            &server,
+            ExecutionLimits::default(),
+            api_key,
+            &format!("Inspect the repository. The input included {api_key} and {partial_key}."),
+        );
+        result.unwrap();
+
+        let output = &session.tool_calls[0].result.as_ref().unwrap().output;
+        let returned_text = output["content"].as_str().unwrap();
+        assert!(!returned_text.contains(api_key));
+        assert!(returned_text.contains("[REDACTED PROVIDER CREDENTIAL]"));
+        assert!(returned_text.contains(partial_key));
+        assert!(session.messages.iter().all(|message| {
+            !message
+                .content
+                .as_deref()
+                .unwrap_or_default()
+                .contains(api_key)
+        }));
+        assert!(session.messages.iter().any(|message| {
+            message
+                .content
+                .as_deref()
+                .is_some_and(|content| content.contains(partial_key))
+        }));
+        assert!(!serde_json::to_string(&session).unwrap().contains(api_key));
+
+        let requests = server.requests();
+        assert_eq!(requests.len(), 2);
+        for request in requests {
+            let request = String::from_utf8(request).unwrap();
+            let body = request.split_once("\r\n\r\n").unwrap().1;
+            assert!(!body.contains(api_key));
+            assert!(request.to_ascii_lowercase().contains(&format!(
+                "authorization: bearer {}",
+                api_key.to_ascii_lowercase()
+            )));
+        }
+        let second_body = api_request_body(&server.requests()[1]);
+        let messages = second_body["messages"].as_array().unwrap();
+        assert!(messages.iter().any(|message| {
+            message["content"]
+                .as_str()
+                .is_some_and(|content| content.contains(partial_key))
+        }));
+        server.finish();
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn real_provider_executes_multiple_calls_in_one_response_with_matching_result_ids() {
+        let fixture = Fixture::new();
+        let calls = json!([
+            {"id":"batch-list","type":"function","function":{"name":"list_files","arguments":"{\"limit\":10}"}},
+            {"id":"batch-read","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"README.md\"}"}}
+        ]);
+        let server = MockHttpServer::start(vec![
+            api_message(
+                json!({"role":"assistant","content":null,"tool_calls":calls}),
+                None,
+            ),
+            api_message(
+                json!({"role":"assistant","content":"Both tools completed."}),
+                None,
+            ),
+        ]);
+        let session =
+            run_with_http_provider(&fixture, &server, ExecutionLimits::default()).unwrap();
+        assert_eq!(session.tool_calls.len(), 2);
+        assert_eq!(session.tool_calls[0].call.id, "batch-list");
+        assert_eq!(session.tool_calls[1].call.id, "batch-read");
+        assert!(session.tool_calls[0].result.is_some());
+        assert_eq!(
+            session.tool_calls[1].result.as_ref().unwrap().output["path"],
+            "README.md"
+        );
+        let second_body = api_request_body(&server.requests()[1]);
+        let messages = second_body["messages"].as_array().unwrap();
+        let assistant_calls = messages[messages.len() - 3]["tool_calls"]
+            .as_array()
+            .unwrap();
+        assert_eq!(assistant_calls.len(), 2);
+        assert_eq!(assistant_calls[0]["id"], "batch-list");
+        assert_eq!(assistant_calls[1]["id"], "batch-read");
+        assert_eq!(messages[messages.len() - 2]["tool_call_id"], "batch-list");
+        assert!(
+            messages[messages.len() - 2]["content"]
+                .as_str()
+                .unwrap()
+                .contains("README.md")
+        );
+        assert_eq!(messages[messages.len() - 1]["tool_call_id"], "batch-read");
+        assert!(
+            messages[messages.len() - 1]["content"]
+                .as_str()
+                .unwrap()
+                .contains("Repository documentation.")
+        );
+        server.finish();
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn real_provider_tool_requests_remain_subject_to_registry_validation() {
+        for (name, arguments) in [
+            ("unknown_tool", json!({})),
+            ("read_file", json!({"path":"../outside.txt"})),
+            ("read_file", json!({"path":12})),
+        ] {
+            let fixture = Fixture::new();
+            let server = MockHttpServer::start(vec![api_tool_call("bad-1", name, arguments)]);
+            let (session, result) =
+                run_with_http_provider_state(&fixture, &server, ExecutionLimits::default());
+            let error = result.unwrap_err();
+            assert!(matches!(
+                error,
+                crate::agent::runtime::RuntimeError::ToolCall { .. }
+            ));
+            assert_eq!(session.status, crate::agent::session::AgentStatus::Failed);
+            assert_eq!(session.tool_calls.len(), 1);
+            assert!(session.tool_calls[0].result.is_none());
+            assert_eq!(server.requests().len(), 1);
+            let request = api_request_body(&server.requests()[0]);
+            assert_eq!(request["tools"].as_array().unwrap().len(), 6);
+            server.finish();
+            fixture.cleanup();
+        }
+    }
+
+    #[test]
+    fn real_provider_failure_and_agent_budgets_produce_terminal_session_states() {
+        let fixture = Fixture::new();
+        let server = MockHttpServer::start(vec![MockHttpResponse::json(401, "credential detail")]);
+        let (session, result) =
+            run_with_http_provider_state(&fixture, &server, ExecutionLimits::default());
+        let error = result.unwrap_err();
+        assert!(matches!(
+            error,
+            crate::agent::runtime::RuntimeError::Provider(ref provider_error)
+                if provider_error.kind == crate::agent::provider::ProviderErrorKind::Authentication
+        ));
+        assert_eq!(session.status, crate::agent::session::AgentStatus::Failed);
+        assert!(
+            session
+                .failure
+                .as_deref()
+                .unwrap()
+                .contains("authentication")
+        );
+        assert!(
+            !session
+                .failure
+                .as_deref()
+                .unwrap()
+                .contains("credential detail")
+        );
+        assert_eq!(server.requests().len(), 1);
+        server.finish();
+        fixture.cleanup();
+
+        let fixture = Fixture::new();
+        let server = MockHttpServer::start(vec![
+            api_tool_call("repeat-1", "list_files", json!({"limit":1})),
+            api_tool_call("repeat-2", "list_files", json!({"limit":1})),
+        ]);
+        let session = run_with_http_provider(
+            &fixture,
+            &server,
+            ExecutionLimits {
+                max_iterations: 2,
+                max_tool_calls: 8,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            session.status,
+            crate::agent::session::AgentStatus::LimitReached
+        );
+        assert_eq!(session.usage.model_iterations, 2);
+        assert_eq!(session.usage.tool_calls, 2);
+        assert_eq!(session.tool_calls.len(), 2);
+        assert_eq!(server.requests().len(), 2);
+        server.finish();
         fixture.cleanup();
     }
 

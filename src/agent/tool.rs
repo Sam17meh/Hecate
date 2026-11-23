@@ -153,6 +153,17 @@ impl ToolRegistry {
         policy: &dyn PermissionPolicy,
         context: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
+        self.execute_with_sanitizer(call, policy, context, |_| {})
+    }
+
+    /// Execute a registered tool and sanitize its structured result before it leaves the registry.
+    pub fn execute_with_sanitizer(
+        &mut self,
+        call: &ToolCallRequest,
+        policy: &dyn PermissionPolicy,
+        context: &ToolContext,
+        sanitize: impl FnOnce(&mut Value),
+    ) -> Result<ToolResult, ToolError> {
         self.validate_call(call, policy, &context.contribution)?;
         let tool = self.tools.get_mut(&call.name).ok_or_else(|| {
             ToolError::new(
@@ -160,7 +171,9 @@ impl ToolRegistry {
                 format!("Tool `{}` is not registered", call.name),
             )
         })?;
-        tool.execute(call.arguments.clone(), context)
+        let mut result = tool.execute(call.arguments.clone(), context)?;
+        sanitize(&mut result.output);
+        Ok(result)
     }
 }
 

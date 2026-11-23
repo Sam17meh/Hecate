@@ -13,22 +13,20 @@ This document describes the implementation at the current repository revision. P
 | Milestone 4A native runtime foundation | Implemented: typed provider contract, scripted mock provider, session, bounded runtime loop, cancellation, tool registry, and read-only permission policy. |
 | Milestone 4B repository tools | Implemented: six read-only tools for listing, reading, searching, Rust symbol inspection, approximate references, and bounded Git diff. |
 | Milestone 4B security hardening | Implemented: path/symlink/hard-link controls, sensitive-path filtering and heuristic redaction, Git invocation restrictions, and resource limits. These controls do not constitute a complete sandbox. |
-| Milestone 4C.1 agent context documentation | This documentation foundation: root agent instructions and current architecture, runtime, security, provider, and roadmap documents. It changes no runtime behavior. |
+| Milestone 4C.1 — Universal Agent Context and Documentation | Implemented: root agent instructions and current architecture, runtime, security, provider, and roadmap documents. It changes no runtime behavior. |
+| Milestone 4C.2 — Real Model Provider Integration | Implemented: configurable OpenAI-compatible Chat Completions provider behind `ModelProvider`, with message, tool-call, and token-usage mapping. |
+| Milestone 4C.3 — Provider Reliability and Integration Testing | Implemented: bounded request/response behavior, typed errors, a bounded retry policy, and deterministic local HTTP and actual-runtime integration tests. |
 
-The current CLI provides `inspect`, `discover`, `plan`, and `prepare`. The agent runtime and repository tools are not wired to an agent CLI command. The only provider is `MockProvider`; there is no live model API, MCP support, session persistence, write/patch tool, shell tool, code execution, or test runner.
+The current CLI provides `inspect`, `discover`, `plan`, and `prepare`. The agent runtime and repository tools are not wired to an agent CLI command. MCP support, session persistence, write/patch tools, shell tools, code execution, and a repository test runner are not implemented.
 
-## Proposed next work
+## Future work
 
-These are proposals, not implemented capabilities or a committed schedule.
+### Milestone 4D — Controlled, Human-Approved Implementation (future)
 
-### Milestone 4C.2 — Human-reviewed patch application
+Design and implement a narrowly scoped change workflow with explicit human approval, validated workspace boundaries, and reviewable changes. This is future work; no write/patch tools or repository-code execution exist today.
 
-Design a narrowly scoped patch workflow that accepts a user-reviewed plan/diff, applies only an explicitly approved patch inside a validated prepared workspace, and shows the resulting diff. Include path and link revalidation, patch/resource limits, cancellation, and regression tests. No model may write arbitrary files or execute commands; no automatic commit or push.
+### Milestone 5 — Independent Review and Verification (future)
 
-### Later milestones
+Design independent review and verification reports for proposed changes. Any repository command or test execution requires a separately designed, restricted execution environment. This milestone is not implemented.
 
-- Evaluate and implement a real `ModelProvider` behind the existing interface, with explicit configuration, timeouts, bounded request/response sizes, safe error handling, and deterministic adapter tests.
-- Design separately isolated validation execution and structured validation reports before running repository commands.
-- Consider MCP only after HECATE's core CLI and permission boundaries are stable; no MCP implementation exists today.
-
-Ordering and scope should be revisited against the threat model and user approval before implementation.
+MCP remains a possible later interface, not part of the milestones above and not implemented today. Ordering and scope should be revisited against the threat model and user approval before implementation.
