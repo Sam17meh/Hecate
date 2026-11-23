@@ -14,9 +14,9 @@ The runtime, session, tool registry, permissions, and dispatch belong to HECATE.
 
 ## Current status
 
-The provider is configured through environment variables and is not exposed by a user-facing agent CLI command. Streaming and MCP are not implemented. The provider method is synchronous; runtime cancellation cannot interrupt a request already in progress, so the HTTP adapter applies a bounded request timeout. No user-facing consent workflow is implemented.
+The provider is configured through environment variables and is used by `contribute --generate`; there is no general-purpose agent CLI command. Streaming and MCP are not implemented. The provider method is synchronous; runtime cancellation cannot interrupt a request already in progress, so the HTTP adapter applies a bounded request timeout. There is no separate provider data-disclosure consent prompt in the CLI.
 
-Conversation context, repository excerpts, tool definitions, tool-call arguments, and tool results are sent to the configured model provider. Users must configure only a provider they trust with the repository data being inspected. HECATE does not currently offer a per-run disclosure or consent prompt because the agent runtime is not wired to a CLI workflow.
+In `contribute --generate`, contribution-plan context, registered tool definitions, tool-call arguments, and repository excerpts/results are sent to the configured model provider. Users must configure only a provider they trust with that repository data. The workspace-creation and patch-approval prompts are not a separate provider disclosure/consent step.
 
 ## Configuration and transport behavior
 

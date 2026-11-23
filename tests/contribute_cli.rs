@@ -30,8 +30,38 @@ fn contribute_help_describes_proposal_and_workflow() {
     assert!(help.contains("REPOSITORY"));
     assert!(help.contains("ISSUE_NUMBER"));
     assert!(help.contains("--proposal"));
+    assert!(help.contains("--generate"));
     assert!(help.contains("--workspace-dir"));
     assert!(help.contains("approval"));
+    let _ = fs::remove_dir_all(directory);
+}
+
+#[test]
+fn proposal_sources_are_required_and_mutually_exclusive() {
+    let directory = root();
+    fs::create_dir_all(&directory).unwrap();
+    let no_source = run(&directory, &["contribute", "owner/repo", "12"]);
+    assert!(!no_source.status.success());
+    let missing_source_error = String::from_utf8_lossy(&no_source.stderr);
+    assert!(
+        missing_source_error.contains("--proposal") || missing_source_error.contains("--generate")
+    );
+
+    let proposal = directory.join("proposal.json");
+    fs::write(&proposal, br#"{"schema_version":1,"files":[]}"#).unwrap();
+    let both_sources = run(
+        &directory,
+        &[
+            "contribute",
+            "owner/repo",
+            "12",
+            "--proposal",
+            proposal.to_str().unwrap(),
+            "--generate",
+        ],
+    );
+    assert!(!both_sources.status.success());
+    assert!(String::from_utf8_lossy(&both_sources.stderr).contains("cannot be used with"));
     let _ = fs::remove_dir_all(directory);
 }
 
@@ -169,6 +199,30 @@ fn non_tty_contribute_fails_closed_before_creating_workspace() {
             "12",
             "--proposal",
             proposal.to_str().unwrap(),
+            "--workspace-dir",
+            workspace.to_str().unwrap(),
+        ],
+    );
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("requires interactive stdin and stdout")
+    );
+    assert!(!workspace.exists());
+    let _ = fs::remove_dir_all(directory);
+}
+
+#[test]
+fn non_tty_generated_workflow_fails_before_workspace_creation() {
+    let directory = root();
+    fs::create_dir_all(&directory).unwrap();
+    let workspace = directory.join("workspaces");
+    let output = run(
+        &directory,
+        &[
+            "contribute",
+            "owner/repo",
+            "12",
+            "--generate",
             "--workspace-dir",
             workspace.to_str().unwrap(),
         ],

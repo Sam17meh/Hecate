@@ -289,6 +289,11 @@ impl PatchValidator {
                             )));
                         }
                     }
+                    if content == original_content {
+                        return Err(PatchValidationError::InvalidProposal(format!(
+                            "Replacement in `{display}` would not change the file"
+                        )));
+                    }
                     let input = HashFile::Replace {
                         path: display.clone(),
                         original_sha256: actual_hash.clone(),

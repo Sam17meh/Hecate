@@ -1,6 +1,6 @@
 # HECATE architecture
 
-HECATE is a modular Rust CLI application. Deterministic repository access and analysis produce typed evidence; discovery and planning use that evidence to create heuristic recommendations. A separate native agent runtime can use a mock provider or a configurable OpenAI-compatible Chat Completions provider to request explicitly registered tools. The runtime is not wired to a CLI command.
+HECATE is a modular Rust CLI application. Deterministic repository access and analysis produce typed evidence; discovery and planning use that evidence to create heuristic recommendations. The native agent runtime uses a mock provider in tests or a configurable OpenAI-compatible Chat Completions provider in `contribute --generate` to request explicitly registered read-only tools. The runtime does not have a general-purpose agent command.
 
 ## Components
 
@@ -19,6 +19,7 @@ HECATE is a modular Rust CLI application. Deterministic repository access and an
 | `src/agent/patch_approval.rs` | Interactive, full-hash confirmation and private, non-serializable, one-use `ApprovedPatch` bound to the validated patch and retained workspace context. |
 | `src/agent/patch_application.rs` | Controlled application API that consumes `ApprovedPatch`, stages results and backups, verifies them, applies per-file changes, verifies outputs, and attempts reverse-order rollback with structured recovery reporting. It is not an agent tool. |
 | `src/contribution_cli.rs` | Bounded proposal input and single-process orchestration of validation, review, approval, application, and result reporting. |
+| `src/agent/proposal_generation.rs` | Runs the native runtime against a prepared contribution context, bounds plan and proposal content, and strictly parses model output into an untrusted `PatchProposal`. |
 
 The current analysis is Rust-focused. Repository inventory recognizes several language extensions, but module, import, symbol, dependency, architecture, findings, and test-gap analysis is implemented around Rust. Other languages can be inventoried and searched as text by repository tools.
 
@@ -36,13 +37,13 @@ flowchart LR
     DISCOVERY --> PLAN["contribution plan"]
     PLAN --> APPROVAL["explicit prepare confirmation"]
     APPROVAL --> WORKSPACE["dedicated clone, branch, plan and manifest"]
-    WORKSPACE --> PROPOSAL["bounded user-supplied proposal"]
+    WORKSPACE --> PROPOSAL["bounded user-supplied or runtime-generated proposal"]
     PROPOSAL --> VALIDATE["read-only patch validation"]
     VALIDATE --> REVIEW["complete preview + full-hash approval"]
     REVIEW --> APPLY["controlled application + recovery report"]
 ```
 
-`inspect` accepts a local directory or GitHub repository. `discover` obtains open issues and ranks possible code matches. `plan` investigates one issue and prints a draft plan. `prepare` obtains the current issue/plan, previews the workspace and asks before creating the local clone and branch. `contribute REPOSITORY ISSUE --proposal FILE` performs preparation, bounded proposal loading, validation, complete preview, full-hash interactive approval, and controlled application in one process. The actual `WorkspaceResult` capabilities remain live across the entire operation; the CLI does not reconstruct trust from a workspace path. The command applies only a user-supplied proposal and does not use a model to generate changes or run repository build/test code.
+`inspect` accepts a local directory or GitHub repository. `discover` obtains open issues and ranks possible code matches. `plan` investigates one issue and prints a draft plan. `prepare` obtains the current issue/plan, previews the workspace and asks before creating the local clone and branch. `contribute REPOSITORY ISSUE --proposal FILE` uses a bounded user-supplied proposal, while `--generate` invokes the native runtime with only registered read-only repository tools. Both paths validate, preview completely, require full-hash interactive approval, and apply through the existing one-use controlled application API. The actual `WorkspaceResult` remains live during the operation; the CLI does not reconstruct trust from a workspace path. Model output is still untrusted. No repository build/test code is run.
 
 GitHub requests use the blocking `reqwest` client and optional `GITHUB_TOKEN`/`GH_TOKEN`. Source archives are cached by repository and commit; issue data is fetched from the API when requested. Source extraction has archive and expanded-size bounds and skips archive links.
 
@@ -59,7 +60,7 @@ The agent subsystem is currently a library-like internal module in the binary, n
 
 `MockProvider` supports deterministic tests; `OpenAiCompatibleProvider` translates Chat Completions requests and responses behind the same provider interface. The six registered repository tools are read-only and validate the workspace manifest and stored plan before access. See [AGENT_RUNTIME.md](AGENT_RUNTIME.md), [PROVIDERS.md](PROVIDERS.md), and [SECURITY.md](SECURITY.md).
 
-Patch handling follows a trust-gated workflow: an untrusted `PatchProposal` is fully validated into a private `ValidatedPatch`; interactive full-hash confirmation produces a non-serializable `ApprovedPatch`; the application layer consumes it by value, stages and verifies results/backups, applies each file operation, then verifies results or reports rollback/recovery. `contribution_cli.rs` orchestrates these steps. No model tool can invoke the application API, and the model runtime is not part of this CLI workflow.
+Patch handling follows a trust-gated workflow: a user or model supplies an untrusted `PatchProposal`; it is fully validated into a private `ValidatedPatch`; interactive full-hash confirmation produces a non-serializable `ApprovedPatch`; the application layer consumes it by value, stages and verifies results/backups, applies each file operation, then verifies results or reports rollback/recovery. `proposal_generation.rs` can only return the untrusted proposal type. `contribution_cli.rs` orchestrates the same validation and approval path for both input modes. No model tool can invoke the application API.
 
 ## Current boundaries
 

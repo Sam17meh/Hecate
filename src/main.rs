@@ -41,13 +41,21 @@ enum Commands {
         #[arg(long)]
         workspace_dir: Option<std::path::PathBuf>,
     },
-    /// Prepare a workspace, review a user-supplied patch, require approval, and apply it
+    /// Prepare a workspace, obtain or generate a proposal, require approval, and apply it
+    #[command(group(
+        clap::ArgGroup::new("proposal_source")
+            .required(true)
+            .args(["proposal", "generate"])
+    ))]
     Contribute {
         repository: String,
         issue_number: u64,
         /// Bounded JSON PatchProposal file (schema version 1)
         #[arg(long)]
-        proposal: std::path::PathBuf,
+        proposal: Option<std::path::PathBuf>,
+        /// Generate an untrusted proposal with the configured native model provider
+        #[arg(long)]
+        generate: bool,
         /// Override the HECATE-managed workspace root (also configurable via HECATE_WORKSPACE_DIR)
         #[arg(long)]
         workspace_dir: Option<std::path::PathBuf>,
@@ -91,11 +99,13 @@ fn main() {
             repository,
             issue_number,
             proposal,
+            generate,
             workspace_dir,
         } => contribute(
             &repository,
             issue_number,
-            &proposal,
+            proposal.as_deref(),
+            generate,
             workspace_dir.as_deref(),
         )
         .map_err(|error| contribution_cli::safe_cli_error(&error)),
@@ -111,8 +121,15 @@ fn prepare_workspace(
     issue_number: u64,
     workspace_root: Option<&Path>,
 ) -> Result<(), String> {
-    prepare_workspace_with_proposal(repository_input, issue_number, workspace_root, true, false)
-        .map(|_| ())
+    prepare_workspace_with_proposal(
+        repository_input,
+        issue_number,
+        workspace_root,
+        true,
+        false,
+        false,
+    )
+    .map(|_| ())
 }
 
 struct PreparedContribution {
@@ -127,6 +144,7 @@ fn prepare_workspace_with_proposal(
     workspace_root: Option<&Path>,
     display_full_plan: bool,
     applying_proposal: bool,
+    model_generation: bool,
 ) -> Result<Option<PreparedContribution>, String> {
     println!("Verifying the open issue and generating its contribution plan...");
     let (repository, plan) = application::investigate_github_issue(repository_input, issue_number)?;
@@ -171,9 +189,13 @@ fn prepare_workspace_with_proposal(
         "Plan metadata: .hecate/plan-v1.json (version {})",
         workspace::PLAN_SCHEMA_VERSION
     );
-    if applying_proposal {
+    if applying_proposal && model_generation {
         println!(
-            "\nThis creates a new local clone and branch. HECATE will then validate the supplied proposal, show its complete diff, and require separate full-hash approval before applying it. It will not run tests, commit, push, or create a pull request."
+            "\nThis creates a new local clone and branch. HECATE will send the contribution plan and read-only repository excerpts to the configured model provider to generate an untrusted proposal. HECATE will validate it, show the complete diff, and require separate full-hash approval before applying it. It will not run tests, commit, push, or create a pull request."
+        );
+    } else if applying_proposal {
+        println!(
+            "\nThis creates a new local clone and branch. HECATE will validate the supplied proposal, show its complete diff, and require separate full-hash approval before applying it. It will not run tests, commit, push, or create a pull request."
         );
     } else {
         println!(
@@ -222,7 +244,8 @@ fn prepare_workspace_with_proposal(
 fn contribute(
     repository_input: &str,
     issue_number: u64,
-    proposal_path: &Path,
+    proposal_path: Option<&Path>,
+    generate: bool,
     workspace_root: Option<&Path>,
 ) -> Result<(), String> {
     use std::io::IsTerminal;
@@ -231,12 +254,22 @@ fn contribute(
     if issue_number == 0 {
         return Err("Issue number must be greater than zero".into());
     }
-    let proposal = contribution_cli::load_proposal(proposal_path)?;
+    let proposal = proposal_path
+        .map(contribution_cli::load_proposal)
+        .transpose()?;
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         return Err(
             "The contribute workflow requires interactive stdin and stdout terminals; no workspace was created".into(),
         );
     }
+    let provider_config =
+        if generate {
+            Some(agent::OpenAiCompatibleConfig::from_env().map_err(|error| {
+                format!("Model provider configuration failed: {}", error.message)
+            })?)
+        } else {
+            None
+        };
 
     let Some(prepared) = prepare_workspace_with_proposal(
         repository_input,
@@ -244,6 +277,7 @@ fn contribute(
         workspace_root,
         false,
         true,
+        generate,
     )?
     else {
         return Ok(());
@@ -261,6 +295,38 @@ fn contribute(
         },
     };
     let session_id = contribution_cli::new_cli_session_id()?;
+    let proposal = if let Some(proposal) = proposal {
+        proposal
+    } else {
+        let config = provider_config.ok_or_else(|| "A proposal source is required".to_string())?;
+        let provider = agent::OpenAiCompatibleProvider::new(config).map_err(|error| {
+            format!(
+                "Could not initialize configured model provider: {}",
+                error.message
+            )
+        })?;
+        println!("Generating an untrusted patch proposal with the configured model...");
+        let generated = agent::proposal_generation::generate_patch_proposal(
+            provider,
+            &prepared.workspace,
+            &context,
+            &prepared.plan,
+            &session_id,
+            agent::ExecutionLimits::default(),
+            &agent::CancellationToken::default(),
+        )
+        .map_err(|error| {
+            format!(
+                "{error}. No patch was applied. Prepared workspace was preserved at {}",
+                contribution_cli::safe_cli_error(&prepared.workspace.path.display().to_string())
+            )
+        })?;
+        println!(
+            "Proposal generated after {} model iteration(s) and {} read-only tool call(s).",
+            generated.summary.model_iterations, generated.summary.tool_calls
+        );
+        generated.proposal
+    };
     let report = contribution_cli::validate_approve_apply(
         &prepared.workspace,
         &context,

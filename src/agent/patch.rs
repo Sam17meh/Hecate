@@ -14,6 +14,7 @@ pub const PATCH_PROPOSAL_SCHEMA_VERSION: u32 = 1;
 /// serde. Validation limits apply after the structure has been allocated and cannot bound the
 /// memory used by an unbounded upstream JSON parser.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PatchProposal {
     pub schema_version: u32,
     pub files: Vec<FilePatch>,
@@ -29,6 +30,7 @@ impl PatchProposal {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FilePatch {
     /// Workspace-relative path using `/` separators.
     pub path: String,
@@ -36,7 +38,7 @@ pub struct FilePatch {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "operation", rename_all = "snake_case")]
+#[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PatchOperation {
     Replace {
         expected_original_sha256: String,
@@ -48,6 +50,7 @@ pub enum PatchOperation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TextEdit {
     pub old_text: String,
     pub new_text: String,

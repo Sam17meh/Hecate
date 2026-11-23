@@ -2,7 +2,7 @@
 
 ## Scope today
 
-`src/agent/` owns a provider-independent loop, typed session state, a registered tool system, and six read-only repository tools. It includes a deterministic mock and an OpenAI-compatible Chat Completions provider. This runtime is not currently invoked by `main.rs`; there is no `hecate agent` command or persisted session workflow.
+`src/agent/` owns a provider-independent loop, typed session state, a registered tool system, and six read-only repository tools. It includes a deterministic mock and an OpenAI-compatible Chat Completions provider. `contribute --generate` invokes the runtime through `proposal_generation.rs`; there is no general `hecate agent` command or persisted session workflow.
 
 ## Request and response contract
 
@@ -34,6 +34,14 @@ Implementations satisfy `Tool` with a definition, permission category, argument 
 The runtime's default `ReadOnlyPermissionPolicy` permits only `ToolPermission::ReadOnly`; workspace-write and command-execution permissions are denied. Each tool has its own argument validation. The definitions describe JSON input schemas, but runtime enforcement is performed by the Rust validators, not by a general JSON Schema validator.
 
 `WorkspaceRepositoryTools` registers `list_files`, `read_file`, `search_code`, `inspect_symbol`, `find_references`, and `read_diff`. These read a prepared workspace, return bounded structured results, and check cancellation. Their constraints and security limitations are in [SECURITY.md](SECURITY.md).
+
+## Patch proposal generation
+
+`proposal_generation::generate_patch_proposal` builds bounded context from the contribution plan, registers only `WorkspaceRepositoryTools`, creates an approved-plan session, and runs the existing `AgentRuntime` with default iteration and tool-call budgets. The model can inspect repository content only through those six registered read-only tools. The final response must be strict version-1 `PatchProposal` JSON; unknown fields, unsupported operations, malformed JSON, oversized output, and empty proposals are rejected. Plain-text refusal/non-actionable responses are reported without approval or application.
+
+The function returns only an untrusted `PatchProposal` and generation usage summary. It cannot construct a `ValidatedPatch` or `ApprovedPatch`. The CLI then passes the proposal through `PatchValidator`, displays the full escaped preview, requires the existing full-hash terminal approval, and consumes that approval through the existing application layer. The model never approves or applies. Provider request/response transport limits and runtime iteration/tool budgets remain in force; the session is process-local and is not persisted by this workflow.
+
+`contribute --generate` sends the plan, tool definitions, and excerpts/results from repository tools to the configured provider. Configure only a provider trusted with this data. Workspace confirmation is not a separate provider data-disclosure consent prompt.
 
 ## Session and plan context
 

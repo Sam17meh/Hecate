@@ -9,6 +9,7 @@ pub mod patch;
 pub(crate) mod patch_application;
 pub mod patch_approval;
 pub mod patch_validation;
+pub mod proposal_generation;
 pub mod provider;
 pub mod repository_tools;
 pub mod runtime;
