@@ -1,7 +1,7 @@
 # Hecate — MVP Specification
 
 **Version:** 0.1  
-**Status:** Proposed  
+**Status:** Partially implemented
 **Project:** Hecate  
 **Tagline:** Navigate. Understand. Improve.
 
@@ -238,17 +238,19 @@ These capabilities may be introduced in later releases.
 
 The MVP is considered successful when:
 
-- [ ] A user can inspect a public GitHub repository.
-- [ ] A user can inspect a local Git repository.
-- [ ] Repository metadata and structure are extracted correctly.
-- [ ] Important modules and code relationships are identified.
-- [ ] The tool produces evidence-backed improvement candidates.
-- [ ] Findings include traceable source references.
+- [x] A user can inspect a public GitHub repository.
+- [x] A user can inspect a local Git repository.
+- [x] Repository metadata and structure are extracted.
+- [x] Rust modules, symbols, imports, and code relationships are analyzed.
+- [x] The tool produces issue-based contribution candidates with heuristic evidence.
+- [x] Candidate matches include source file references and matching rationale.
 - [ ] A validation stage evaluates candidate findings.
 - [ ] Unsupported findings are rejected or labelled appropriately.
-- [ ] A readable CLI report is generated.
-- [ ] The original repository remains unchanged.
-- [ ] Errors and incomplete analyses are communicated clearly.
+- [x] A readable CLI report is generated.
+- [x] The original repository remains unchanged by inspection.
+- [x] Common GitHub API, network, and rate-limit errors are reported.
+
+The current `discover` command ranks open issues using deterministic text matching against Rust source paths and symbols. Its scores are heuristics for triage, not independent validation or proof that an issue is reproducible. Source archives are cached by repository and commit under the system temporary directory, or under `HECATE_CACHE_DIR` when configured.
 
 ## 9. Definition of Success
 

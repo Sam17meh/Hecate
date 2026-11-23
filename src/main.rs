@@ -1,17 +1,12 @@
 mod analysis;
+mod application;
+mod discovery;
+mod github;
 mod inspection;
 
-use analysis::architecture::build_architecture_map;
-use analysis::dependencies::build_dependency_graph;
-use analysis::findings::build_findings;
-use analysis::import_resolution::{ImportResolutionKind, build_import_resolution};
-use analysis::module_index::build_module_index;
-use analysis::symbols::analyze_repository;
-use analysis::test_gaps::analyze_test_gaps;
 use clap::{Parser, Subcommand};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-/// Hecate Ã¢â‚¬â€ Navigate. Understand. Improve.
 #[derive(Parser, Debug)]
 #[command(
     name = "hecate",
@@ -25,723 +20,388 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Inspect a GitHub repository or local codebase
-    Inspect {
-        /// Repository in owner/repo format or a local path
-        repository: String,
-    },
-}
-
-// The two types of repositories Hecate can recognise.
-#[derive(Debug)]
-enum RepositoryTarget {
-    Local(PathBuf),
-    GitHub { owner: String, repo: String },
-}
-
-// Identify what kind of target the user provided.
-fn identify_target(input: &str) -> Result<RepositoryTarget, String> {
-    let path = Path::new(input);
-
-    // First, check whether the input is an existing directory.
-    if path.exists() && path.is_dir() {
-        return Ok(RepositoryTarget::Local(
-            path.canonicalize()
-                .map_err(|e| format!("Could not resolve path: {e}"))?,
-        ));
-    }
-
-    // Otherwise, check whether it follows owner/repo format.
-    let parts: Vec<&str> = input.split('/').collect();
-
-    if parts.len() == 2
-        && !parts[0].is_empty()
-        && !parts[1].is_empty()
-        && parts.iter().all(|part| {
-            part.chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
-        })
-    {
-        return Ok(RepositoryTarget::GitHub {
-            owner: parts[0].to_string(),
-            repo: parts[1].to_string(),
-        });
-    }
-
-    Err(format!("Invalid repository target: {input}"))
+    /// Inspect a local directory or public GitHub repository
+    Inspect { repository: String },
+    /// Find and rank contribution opportunities from a public repository's open issues
+    Discover { repository: String },
 }
 
 fn main() {
     let cli = Cli::parse();
-
-    match cli.command {
+    let result = match cli.command {
         Commands::Inspect { repository } => {
-            println!("Hecate Repository Inspector");
-
-            match identify_target(&repository) {
-                Ok(RepositoryTarget::Local(path)) => {
-                    println!("Target type: Local directory");
-
-                    match inspection::inspect_local(&path) {
-                        Ok(info) => {
-                            println!("\n--- Repository Overview ---");
-                            println!("Root: {}", info.root.display());
-                            println!(
-                                "Git repository: {}",
-                                if info.is_git_repository { "Yes" } else { "No" }
-                            );
-
-                            println!("\n--- Top-level Entries ---");
-                            for entry in &info.entries {
-                                println!("  {}", entry);
-                            }
-
-                            println!("\n--- Detected Project Markers ---");
-                            if info.project_markers.is_empty() {
-                                println!("  No known project markers found.");
-                            } else {
-                                for marker in &info.project_markers {
-                                    println!("  {}", marker);
-                                }
-                            }
-
-                            println!("\n--- Programming Languages ---");
-                            if info.language_counts.is_empty() {
-                                println!("  No recognised programming languages found.");
-                            } else {
-                                for (language, count) in &info.language_counts {
-                                    println!("  {}: {} files", language, count);
-                                }
-                            }
-
-                            println!("\n--- Source Files ---");
-                            println!("Total source files: {}", info.source_files.len());
-
-                            for file in &info.source_files {
-                                println!("  {}", file);
-                            }
-                            println!("\n--- Rust Module Index ---");
-
-                            let module_index = build_module_index(&info);
-
-                            println!("\nIndexed Modules");
-
-                            if module_index.modules.is_empty() {
-                                println!("  No Rust crate roots found.");
-                            } else {
-                                for module in &module_index.modules {
-                                    let logical_path = if module.module_path.is_empty() {
-                                        "(crate root)".to_string()
-                                    } else {
-                                        module.module_path.join("::")
-                                    };
-
-                                    println!(
-                                        "  {} [{}] -> {}",
-                                        logical_path, module.crate_root, module.file
-                                    );
-                                }
-                            }
-
-                            println!("\nTotal indexed modules: {}", module_index.modules.len());
-
-                            println!("\nUnresolved Indexed Modules");
-
-                            if module_index.unresolved_modules.is_empty() {
-                                println!("  No unresolved indexed modules found.");
-                            } else {
-                                for module in &module_index.unresolved_modules {
-                                    let context = if module.module_context.is_empty() {
-                                        String::new()
-                                    } else {
-                                        format!(" (inside {})", module.module_context.join("::"))
-                                    };
-
-                                    println!(
-                                        "  {} -> {}{} [crate: {}]",
-                                        module.source,
-                                        module.module_name,
-                                        context,
-                                        module.crate_root
-                                    );
-                                }
-                            }
-
-                            println!(
-                                "\nTotal unresolved indexed modules: {}",
-                                module_index.unresolved_modules.len()
-                            );
-
-                            println!("\nModule Index Diagnostics");
-
-                            if module_index.diagnostics.is_empty() {
-                                println!("  No module index diagnostics.");
-                            } else {
-                                for diagnostic in &module_index.diagnostics {
-                                    println!(
-                                        "  Crate: {} | File: {}",
-                                        diagnostic.crate_root, diagnostic.file
-                                    );
-                                    println!("  Message: {}", diagnostic.message);
-                                }
-                            }
-
-                            println!(
-                                "\nTotal module index diagnostics: {}",
-                                module_index.diagnostics.len()
-                            );
-                            println!("\n--- Rust Module Dependencies ---");
-
-                            let dependency_graph = build_dependency_graph(&info);
-                            match &dependency_graph {
-                                Ok(graph) => {
-                                    if graph.dependencies.is_empty() {
-                                        println!("  No Rust module dependencies found.");
-                                    } else {
-                                        for dependency in &graph.dependencies {
-                                            let logical_module = dependency
-                                                .module_context
-                                                .iter()
-                                                .chain(std::iter::once(&dependency.module_name))
-                                                .cloned()
-                                                .collect::<Vec<_>>()
-                                                .join("::");
-
-                                            println!(
-                                                "  {} -> {} [module: {}]",
-                                                dependency.source,
-                                                dependency.target,
-                                                logical_module
-                                            );
-                                        }
-
-                                        println!(
-                                            "\nTotal module dependencies: {}",
-                                            graph.dependencies.len()
-                                        );
-
-                                        println!("\n--- Unresolved Module Declarations ---");
-
-                                        if graph.unresolved_modules.is_empty() {
-                                            println!("  No unresolved module declarations found.");
-                                        } else {
-                                            for module in &graph.unresolved_modules {
-                                                let context = if module.module_context.is_empty() {
-                                                    String::new()
-                                                } else {
-                                                    format!(
-                                                        " (inside {})",
-                                                        module.module_context.join("::")
-                                                    )
-                                                };
-
-                                                println!(
-                                                    "  {} -> {}{}",
-                                                    module.source, module.module_name, context
-                                                );
-                                            }
-                                        }
-
-                                        println!(
-                                            "\nTotal unresolved modules: {}",
-                                            graph.unresolved_modules.len()
-                                        );
-
-                                        println!("\n--- Parsing Diagnostics ---");
-
-                                        if graph.parse_errors.is_empty() {
-                                            println!("  No parsing errors found.");
-                                        } else {
-                                            for error in &graph.parse_errors {
-                                                println!("  File: {}", error.source);
-                                                println!("  Error: {}", error.message);
-                                            }
-                                        }
-
-                                        println!(
-                                            "\nTotal parsing errors: {}",
-                                            graph.parse_errors.len()
-                                        );
-                                    }
-                                }
-
-                                Err(error) => {
-                                    eprintln!("Dependency analysis failed: {error}");
-                                }
-                            }
-                            println!("\n--- Rust Symbol Analysis ---");
-
-                            match analyze_repository(&info.source_files, &info.root) {
-                                Ok(symbol_analysis) => {
-                                    println!(
-                                        "Total symbols detected: {}",
-                                        symbol_analysis.symbols.len()
-                                    );
-
-                                    let mut grouped: std::collections::BTreeMap<&str, Vec<_>> =
-                                        std::collections::BTreeMap::new();
-
-                                    for symbol in &symbol_analysis.symbols {
-                                        grouped
-                                            .entry(symbol.kind.as_str())
-                                            .or_default()
-                                            .push(symbol);
-                                    }
-
-                                    for (kind, symbols) in &grouped {
-                                        println!("\n{} ({}):", kind, symbols.len());
-
-                                        for symbol in symbols {
-                                            println!(
-                                                "  {} - {}:{}-{}",
-                                                symbol.name,
-                                                symbol.file,
-                                                symbol.start_line,
-                                                symbol.end_line
-                                            );
-
-                                            if !symbol.scope.is_empty() {
-                                                println!("    Scope: {}", symbol.scope.join("::"));
-                                            }
-
-                                            if symbol.is_test {
-                                                println!("    Classification: test code");
-                                            }
-                                        }
-                                    }
-                                    println!("\n--- Symbol diagnostics ---");
-
-                                    if symbol_analysis.diagnostics.is_empty() {
-                                        println!("  No symbol analysis errors.");
-                                    } else {
-                                        for diagnostic in &symbol_analysis.diagnostics {
-                                            println!("  File: {}", diagnostic.file);
-                                            println!("  Error: {}", diagnostic.message);
-                                        }
-                                    }
-
-                                    println!(
-                                        "Total symbol diagnostics: {}",
-                                        symbol_analysis.diagnostics.len()
-                                    );
-
-                                    println!("\n--- Rust Test Gap Analysis ---");
-
-                                    let test_gap_analysis = analyze_test_gaps(
-                                        &info.source_files,
-                                        &info.root,
-                                        &symbol_analysis,
-                                    );
-
-                                    println!(
-                                        "Potential test gaps: {}",
-                                        test_gap_analysis.gaps.len()
-                                    );
-
-                                    if test_gap_analysis.gaps.is_empty() {
-                                        println!("  No potential test gaps detected.");
-                                    } else {
-                                        for gap in &test_gap_analysis.gaps {
-                                            println!(
-                                                "\n  {} - {}:{}-{}",
-                                                gap.symbol.name,
-                                                gap.symbol.file,
-                                                gap.symbol.start_line,
-                                                gap.symbol.end_line
-                                            );
-
-                                            println!("    {}", gap.explanation);
-                                        }
-                                    }
-
-                                    println!("\nTest Gap Diagnostics");
-
-                                    if test_gap_analysis.diagnostics.is_empty() {
-                                        println!("  No test gap analysis diagnostics.");
-                                    } else {
-                                        for diagnostic in &test_gap_analysis.diagnostics {
-                                            println!("  File: {}", diagnostic.file);
-
-                                            println!("  Error: {}", diagnostic.message);
-                                        }
-                                    }
-
-                                    println!(
-                                        "Total test gap diagnostics: {}",
-                                        test_gap_analysis.diagnostics.len()
-                                    );
-
-                                    println!(
-                                        "Note: Test gap detection is heuristic, not runtime coverage."
-                                    );
-
-                                    let import_analysis = build_import_resolution(
-                                        &info,
-                                        &module_index,
-                                        &symbol_analysis,
-                                    );
-
-                                    println!("\n--- Rust Import Resolution ---");
-
-                                    let mut resolved_modules = 0usize;
-                                    let mut resolved_symbols = 0usize;
-                                    let mut standard_library = 0usize;
-                                    let mut declared_dependencies = 0usize;
-                                    let mut external_candidates = 0usize;
-                                    let mut unresolved = 0usize;
-                                    let mut ambiguous = 0usize;
-
-                                    for import in &import_analysis.imports {
-                                        match &import.kind {
-                                            ImportResolutionKind::ResolvedModule => {
-                                                resolved_modules += 1
-                                            }
-                                            ImportResolutionKind::ResolvedSymbol => {
-                                                resolved_symbols += 1
-                                            }
-                                            ImportResolutionKind::StandardLibrary => {
-                                                standard_library += 1
-                                            }
-                                            ImportResolutionKind::DeclaredDependency => {
-                                                declared_dependencies += 1
-                                            }
-                                            ImportResolutionKind::ExternalCandidate => {
-                                                external_candidates += 1
-                                            }
-                                            ImportResolutionKind::Unresolved => unresolved += 1,
-                                            ImportResolutionKind::Ambiguous => ambiguous += 1,
-                                        }
-
-                                        let alias = import
-                                            .alias
-                                            .as_deref()
-                                            .map(|value| format!(" as {value}"))
-                                            .unwrap_or_default();
-
-                                        let glob = if import.is_glob { " [glob]" } else { "" };
-
-                                        println!(
-                                            "\n  [{:?}] {}:{}",
-                                            import.kind, import.source, import.line
-                                        );
-
-                                        println!("    Import: {}{}{}", import.path, alias, glob);
-                                        println!("    Crate root: {}", import.crate_root);
-
-                                        if !import.module_context.is_empty() {
-                                            println!(
-                                                "    Module context: {}",
-                                                import.module_context.join("::")
-                                            );
-                                        }
-
-                                        if let Some(target) = &import.target_file {
-                                            println!("    Target file: {}", target);
-                                        }
-
-                                        if let Some(symbol) = &import.target_symbol {
-                                            println!("    Target symbol: {}", symbol);
-                                        }
-
-                                        if let Some(dependency) = &import.cargo_dependency {
-                                            println!(
-                                                "    Cargo package: {}",
-                                                dependency.package_name
-                                            );
-                                            println!(
-                                                "    Manifest section: [{}]",
-                                                dependency.kind.manifest_section()
-                                            );
-
-                                            if let Some(version) = &dependency.version {
-                                                println!("    Declared version: {}", version);
-                                            }
-                                        }
-                                        if let Some(message) = &import.message {
-                                            println!("    Note: {}", message);
-                                        }
-                                    }
-
-                                    println!("\nImport Resolution Summary");
-                                    println!("  Total imports: {}", import_analysis.imports.len());
-                                    println!("  Resolved modules: {}", resolved_modules);
-                                    println!("  Resolved symbols: {}", resolved_symbols);
-                                    println!("  Standard library: {}", standard_library);
-                                    println!(
-                                        "  Declared Cargo dependencies: {}",
-                                        declared_dependencies
-                                    );
-                                    println!("  External candidates: {}", external_candidates);
-                                    println!("  Unresolved: {}", unresolved);
-                                    println!("  Ambiguous: {}", ambiguous);
-
-                                    println!("\nImport Resolution Diagnostics");
-
-                                    if import_analysis.diagnostics.is_empty() {
-                                        println!("  No import resolution diagnostics.");
-                                    } else {
-                                        for diagnostic in &import_analysis.diagnostics {
-                                            println!("  File: {}", diagnostic.file);
-                                            println!("  Error: {}", diagnostic.message);
-                                        }
-                                    }
-
-                                    println!(
-                                        "Total import resolution diagnostics: {}",
-                                        import_analysis.diagnostics.len()
-                                    );
-                                    println!("\n--- HECATE Findings ---");
-
-                                    match &dependency_graph {
-                                        Ok(graph) => {
-                                            let findings = build_findings(&import_analysis, graph);
-
-                                            let mut valid_count = 0usize;
-                                            let mut invalid_count = 0usize;
-
-                                            println!(
-                                                "  Total findings generated: {}",
-                                                findings.len()
-                                            );
-
-                                            if findings.is_empty() {
-                                                println!(
-                                                    "  No actionable findings from the current deterministic analyzers."
-                                                );
-                                            }
-
-                                            for finding in &findings {
-                                                match finding.validate() {
-                                                    Ok(()) => {
-                                                        valid_count += 1;
-
-                                                        println!(
-                                                            "\n  [{}] {}",
-                                                            finding.category as u8, finding.title
-                                                        );
-                                                        println!("    ID: {}", finding.id);
-                                                        println!(
-                                                            "    Description: {}",
-                                                            finding.description
-                                                        );
-                                                        println!(
-                                                            "    Impact: {:?}",
-                                                            finding.impact
-                                                        );
-                                                        println!(
-                                                            "    Confidence: {:?}",
-                                                            finding.confidence
-                                                        );
-                                                        println!(
-                                                            "    Effort: {:?}",
-                                                            finding.effort
-                                                        );
-                                                        println!(
-                                                            "    Validation: {:?}",
-                                                            finding.validation_status
-                                                        );
-
-                                                        for evidence in &finding.evidence {
-                                                            let location = match (
-                                                                evidence.start_line,
-                                                                evidence.end_line,
-                                                            ) {
-                                                                (Some(start), Some(end))
-                                                                    if start == end =>
-                                                                {
-                                                                    format!(":{}", start)
-                                                                }
-                                                                (Some(start), Some(end)) => {
-                                                                    format!(":{}-{}", start, end)
-                                                                }
-                                                                _ => String::new(),
-                                                            };
-
-                                                            println!(
-                                                                "    Evidence: {}{}",
-                                                                evidence.file, location
-                                                            );
-                                                            println!(
-                                                                "      {}",
-                                                                evidence.explanation
-                                                            );
-                                                        }
-                                                    }
-                                                    Err(errors) => {
-                                                        invalid_count += 1;
-                                                        println!(
-                                                            "\n  Skipping invalid finding: {}",
-                                                            finding.id
-                                                        );
-
-                                                        for error in errors {
-                                                            println!(
-                                                                "    Validation error: {}",
-                                                                error
-                                                            );
-                                                        }
-                                                    }
-                                                }
-                                            }
-
-                                            println!("\nFindings Summary");
-                                            println!("  Valid findings: {}", valid_count);
-                                            println!(
-                                                "  Invalid findings skipped: {}",
-                                                invalid_count
-                                            );
-                                        }
-                                        Err(error) => {
-                                            println!(
-                                                "  Findings unavailable because dependency analysis failed: {}",
-                                                error
-                                            );
-                                        }
-                                    }
-                                    println!("\n--- Repository Architecture Map ---");
-
-                                    match &dependency_graph {
-                                        Ok(architecture_dependencies) => {
-                                            let architecture = build_architecture_map(
-                                                &info,
-                                                &architecture_dependencies,
-                                                &symbol_analysis,
-                                            );
-
-                                            let summary = &architecture.summary;
-
-                                            println!("\nArchitecture Summary");
-                                            println!(
-                                                "  Source files: {}",
-                                                summary.total_source_files
-                                            );
-                                            println!("  Rust files: {}", summary.rust_files);
-                                            println!(
-                                                "  Files with symbols: {}",
-                                                summary.files_with_symbols
-                                            );
-                                            println!(
-                                                "  Files without symbols: {}",
-                                                summary.files_without_symbols
-                                            );
-                                            println!("  Total symbols: {}", summary.total_symbols);
-                                            println!("  Test symbols: {}", summary.test_symbols);
-                                            println!(
-                                                "  Module dependencies: {}",
-                                                summary.module_dependencies
-                                            );
-                                            println!(
-                                                "  Unresolved modules: {}",
-                                                summary.unresolved_modules
-                                            );
-                                            println!(
-                                                "  Dependency parse errors: {}",
-                                                summary.dependency_parse_errors
-                                            );
-                                            println!(
-                                                "  Symbol diagnostics: {}",
-                                                summary.symbol_diagnostics
-                                            );
-
-                                            println!("\nFile Architecture");
-
-                                            for file in &architecture.files {
-                                                println!("\n  {}", file.path);
-
-                                                if file.is_test_file {
-                                                    println!("    Classification: test file");
-                                                }
-
-                                                if !file.dependencies.is_empty() {
-                                                    println!("    Dependencies:");
-
-                                                    for dependency in &file.dependencies {
-                                                        println!("      -> {}", dependency);
-                                                    }
-                                                }
-
-                                                if !file.symbols.is_empty() {
-                                                    println!("    Symbols:");
-
-                                                    for symbol in &file.symbols {
-                                                        let scope = if symbol.scope.is_empty() {
-                                                            String::new()
-                                                        } else {
-                                                            format!(
-                                                                " [{}]",
-                                                                symbol.scope.join("::")
-                                                            )
-                                                        };
-
-                                                        let test_label = if symbol.is_test {
-                                                            " [test]"
-                                                        } else {
-                                                            ""
-                                                        };
-
-                                                        println!(
-                                                            "      {} {}:{}-{}{}{}",
-                                                            symbol.kind,
-                                                            symbol.name,
-                                                            symbol.start_line,
-                                                            symbol.end_line,
-                                                            scope,
-                                                            test_label
-                                                        );
-                                                    }
-                                                }
-                                            }
-
-                                            println!("\nArchitecture Diagnostics");
-
-                                            if architecture.diagnostics.is_empty() {
-                                                println!("  No architecture diagnostics.");
-                                            } else {
-                                                for diagnostic in &architecture.diagnostics {
-                                                    let location = diagnostic
-                                                        .file
-                                                        .as_deref()
-                                                        .unwrap_or("<repository>");
-
-                                                    println!(
-                                                        "  [{}] {}: {}",
-                                                        diagnostic.category,
-                                                        location,
-                                                        diagnostic.message
-                                                    );
-                                                }
-                                            }
-                                        }
-                                        Err(error) => {
-                                            eprintln!(
-                                                "Architecture dependency analysis failed: {error}"
-                                            );
-                                        }
-                                    }
-                                }
-                                Err(error) => {
-                                    eprintln!("Symbol analysis failed: {error}");
-                                }
-                            }
-                        }
-
-                        Err(error) => {
-                            eprintln!("Inspection failed: {error}");
-                            std::process::exit(1);
-                        }
+            if Path::new(&repository).is_dir() {
+                application::analyze_local_repository(Path::new(&repository)).map(|analysis| {
+                    print_analysis(&analysis, None);
+                })
+            } else {
+                application::inspect_github_repository(&repository).map(|(github, analysis)| {
+                    print_analysis(&analysis, Some(&github));
+                })
+            }
+        }
+        Commands::Discover { repository } => {
+            println!(
+                "Fetching repository and open issues from GitHub, then analyzing local Rust source..."
+            );
+            application::discover_github_contributions(&repository)
+                .map(|report| print_discovery(&report))
+        }
+    };
+    if let Err(error) = result {
+        eprintln!("HECATE: {error}");
+        std::process::exit(1);
+    }
+}
+
+fn print_analysis(
+    analysis: &application::RepositoryAnalysis,
+    github: Option<&github::GitHubRepository>,
+) {
+    println!("HECATE — REPOSITORY INSPECTION");
+    if let Some(repository) = github {
+        println!("Repository: {} ({})", repository.url, repository.commit);
+    }
+    println!("Root: {}", analysis.repository.root.display());
+    println!(
+        "Git repository: {}",
+        if analysis.repository.is_git_repository {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    println!(
+        "Languages: {}",
+        analysis
+            .repository
+            .language_counts
+            .iter()
+            .map(|(language, count)| format!("{language} ({count})"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    println!("Source files: {}", analysis.repository.source_files.len());
+    println!(
+        "Top-level entries: {}",
+        analysis.repository.entries.join(", ")
+    );
+    println!(
+        "Project markers: {}",
+        if analysis.repository.project_markers.is_empty() {
+            "none".to_string()
+        } else {
+            analysis.repository.project_markers.join(", ")
+        }
+    );
+    println!(
+        "Rust modules indexed: {}",
+        analysis.module_index.modules.len()
+    );
+    for module in &analysis.module_index.modules {
+        let logical = if module.module_path.is_empty() {
+            "(crate root)".to_string()
+        } else {
+            module.module_path.join("::")
+        };
+        println!(
+            "  module {logical} [{}] -> {}",
+            module.crate_root, module.file
+        );
+    }
+    for unresolved in &analysis.module_index.unresolved_modules {
+        println!(
+            "  unresolved module {} in {} ({})",
+            unresolved.module_name, unresolved.source, unresolved.crate_root
+        );
+    }
+    for diagnostic in &analysis.module_index.diagnostics {
+        println!(
+            "  module index diagnostic [{}] {}: {}",
+            diagnostic.crate_root, diagnostic.file, diagnostic.message
+        );
+    }
+    println!(
+        "Module dependencies: {}",
+        analysis.dependency_graph.dependencies.len()
+    );
+    println!(
+        "Unresolved module declarations: {}",
+        analysis.dependency_graph.unresolved_modules.len()
+    );
+    for dependency in &analysis.dependency_graph.dependencies {
+        println!(
+            "  {} -> {} ({}{})",
+            dependency.source,
+            dependency.target,
+            if dependency.module_context.is_empty() {
+                String::new()
+            } else {
+                format!("{}::", dependency.module_context.join("::"))
+            },
+            dependency.module_name
+        );
+    }
+    for unresolved in &analysis.dependency_graph.unresolved_modules {
+        println!(
+            "  unresolved declaration {} in {}",
+            unresolved.module_name, unresolved.source
+        );
+    }
+    for error in &analysis.dependency_graph.parse_errors {
+        println!("  parse diagnostic {}: {}", error.source, error.message);
+    }
+    println!("Rust symbols: {}", analysis.symbols.symbols.len());
+    for symbol in &analysis.symbols.symbols {
+        let test = if symbol.is_test { " [test]" } else { "" };
+        println!(
+            "  {} {}:{}:{}-{}{}",
+            symbol.kind, symbol.name, symbol.file, symbol.start_line, symbol.end_line, test
+        );
+    }
+    for diagnostic in &analysis.symbols.diagnostics {
+        println!(
+            "  symbol diagnostic {}: {}",
+            diagnostic.file, diagnostic.message
+        );
+    }
+    println!("Imports analyzed: {}", analysis.imports.imports.len());
+    for import in &analysis.imports.imports {
+        println!(
+            "  [{:?}] {}:{} {}{}{}",
+            import.kind,
+            import.source,
+            import.line,
+            import.path,
+            import
+                .alias
+                .as_ref()
+                .map(|alias| format!(" as {alias}"))
+                .unwrap_or_default(),
+            if import.is_glob { " [glob]" } else { "" }
+        );
+    }
+    for diagnostic in &analysis.imports.diagnostics {
+        println!(
+            "  import diagnostic {}: {}",
+            diagnostic.file, diagnostic.message
+        );
+    }
+    println!(
+        "Potential test gaps (heuristic): {}",
+        analysis.test_gaps.gaps.len()
+    );
+    for gap in &analysis.test_gaps.gaps {
+        println!(
+            "  {} {}:{}-{} — {}",
+            gap.symbol.name,
+            gap.symbol.file,
+            gap.symbol.start_line,
+            gap.symbol.end_line,
+            gap.explanation
+        );
+    }
+    for diagnostic in &analysis.test_gaps.diagnostics {
+        println!(
+            "  test-gap diagnostic {}: {}",
+            diagnostic.file, diagnostic.message
+        );
+    }
+    let summary = &analysis.architecture.summary;
+    println!(
+        "Architecture files: {} ({} Rust) | with symbols: {} | without symbols: {} | symbols: {} ({} tests) | dependencies: {} | unresolved modules: {} | parse errors: {} | symbol diagnostics: {} | total diagnostics: {}",
+        summary.total_source_files,
+        summary.rust_files,
+        summary.files_with_symbols,
+        summary.files_without_symbols,
+        summary.total_symbols,
+        summary.test_symbols,
+        summary.module_dependencies,
+        summary.unresolved_modules,
+        summary.dependency_parse_errors,
+        summary.symbol_diagnostics,
+        analysis.architecture.diagnostics.len()
+    );
+    for file in &analysis.architecture.files {
+        let classification = if file.is_test_file {
+            " [test file]"
+        } else {
+            ""
+        };
+        println!("  {}{}", file.path, classification);
+        for dependency in &file.dependencies {
+            println!("    -> {dependency}");
+        }
+        for symbol in &file.symbols {
+            let scope = if symbol.scope.is_empty() {
+                String::new()
+            } else {
+                format!(" [{}]", symbol.scope.join("::"))
+            };
+            let test = if symbol.is_test { " [test]" } else { "" };
+            println!(
+                "    {} {}:{}-{}{}{}",
+                symbol.kind, symbol.name, symbol.start_line, symbol.end_line, scope, test
+            );
+        }
+    }
+    for diagnostic in &analysis.architecture.diagnostics {
+        println!(
+            "  architecture diagnostic [{}] {}: {}",
+            diagnostic.category,
+            diagnostic.file.as_deref().unwrap_or("<repository>"),
+            diagnostic.message
+        );
+    }
+    println!(
+        "Current deterministic findings: {}",
+        analysis.findings.len()
+    );
+    for finding in &analysis.findings {
+        if let Err(errors) = finding.validate() {
+            println!(
+                "  skipping invalid finding {}: {}",
+                finding.id,
+                errors.join("; ")
+            );
+            continue;
+        }
+        let location = finding
+            .evidence
+            .first()
+            .map(|e| {
+                format!(
+                    "{}{}",
+                    e.file,
+                    e.start_line
+                        .map(|line| format!(":{line}"))
+                        .unwrap_or_default()
+                )
+            })
+            .unwrap_or_default();
+        println!(
+            "  [{:?}] {} — {} (impact {:?}, confidence {:?}, effort {:?}, {:?})",
+            finding.category,
+            finding.title,
+            location,
+            finding.impact,
+            finding.confidence,
+            finding.effort,
+            finding.validation_status
+        );
+        for evidence in &finding.evidence {
+            println!("    {}", evidence.explanation);
+        }
+    }
+    println!("\nAnalysis is static; findings and test-gap signals require human review.");
+}
+
+fn print_discovery(report: &application::DiscoveryReport) {
+    println!("HECATE — GITHUB CONTRIBUTION DISCOVERY");
+    println!("Repository: {}", report.github_repository.url);
+    println!(
+        "Default branch: {} | commit: {}",
+        report.github_repository.default_branch, report.github_repository.commit
+    );
+    println!("Open issues analyzed: {}", report.issues.len());
+    println!(
+        "Rust files: {} | modules: {} | symbols: {}",
+        report
+            .analysis
+            .repository
+            .source_files
+            .iter()
+            .filter(|path| path.ends_with(".rs"))
+            .count(),
+        report.analysis.module_index.modules.len(),
+        report.analysis.symbols.symbols.len()
+    );
+    if report.opportunities.is_empty() {
+        println!("\nNo open issues were returned by GitHub.");
+        return;
+    }
+    println!("\nRanked opportunities (heuristic; review issue and code evidence before choosing):");
+    for (index, opportunity) in report.opportunities.iter().take(10).enumerate() {
+        println!(
+            "\n{}. #{} {} [{}]",
+            index + 1,
+            opportunity.issue.number,
+            opportunity.issue.title,
+            opportunity.ranking.score
+        );
+        println!("   {}", opportunity.issue.url);
+        if !opportunity.issue.body.trim().is_empty() {
+            let normalized_body = opportunity
+                .issue
+                .body
+                .chars()
+                .map(|character| {
+                    if character.is_control() {
+                        ' '
+                    } else {
+                        character
                     }
+                })
+                .collect::<String>();
+            let compact_body = normalized_body
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            let preview = compact_body.chars().take(280).collect::<String>();
+            println!(
+                "   {}{}",
+                preview,
+                if compact_body.chars().count() > 280 {
+                    "…"
+                } else {
+                    ""
                 }
-
-                Ok(RepositoryTarget::GitHub { owner, repo }) => {
-                    println!("Target type: GitHub repository");
-                    println!("Owner: {owner}");
-                    println!("Repository: {repo}");
-                    println!("\nGitHub inspection is not implemented yet.");
-                }
-
-                Err(error) => {
-                    eprintln!("Error: {error}");
-                    std::process::exit(1);
+            );
+        }
+        println!(
+            "   Updated: {} | comments: {}",
+            opportunity.issue.updated_at, opportunity.issue.comments
+        );
+        if !opportunity.issue.labels.is_empty() {
+            println!("   Labels: {}", opportunity.issue.labels.join(", "));
+        }
+        println!(
+            "   Factor scores /100: relevance {}, impact {}, confidence {}, effort {}, risk {}",
+            opportunity.ranking.relevance,
+            opportunity.ranking.impact,
+            opportunity.ranking.confidence,
+            opportunity.ranking.effort,
+            opportunity.ranking.risk
+        );
+        for rationale in &opportunity.ranking.rationale {
+            println!("   - {rationale}");
+        }
+        if opportunity.matches.is_empty() {
+            println!(
+                "   No source location matched the issue text; this is not evidence that the issue lacks a code fix."
+            );
+        } else {
+            println!("   Possible code locations:");
+            for matched in &opportunity.matches {
+                let symbol = matched
+                    .symbol
+                    .as_ref()
+                    .map(|value| {
+                        format!(
+                            "{} ({value})",
+                            matched
+                                .line
+                                .map(|line| format!(":{line}"))
+                                .unwrap_or_default()
+                        )
+                    })
+                    .unwrap_or_default();
+                println!(
+                    "   - {}{} (relevance {})",
+                    matched.file, symbol, matched.relevance
+                );
+                for evidence in &matched.evidence {
+                    println!("     {evidence}");
                 }
             }
         }

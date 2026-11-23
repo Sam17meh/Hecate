@@ -4,11 +4,11 @@
 
 ### Navigate. Understand. Improve.
 
-**An open-source, AI-powered repository intelligence system for discovering and delivering meaningful software contributions.**
+**An open-source repository intelligence tool for discovering meaningful software contributions.**
 
-[![Status: In Design](https://img.shields.io/badge/status-in%20design-8b5cf6.svg)](#project-status)
+[![Status: Early implementation](https://img.shields.io/badge/status-early%20implementation-8b5cf6.svg)](#project-status)
 [![Language: Rust](https://img.shields.io/badge/core-Rust-orange.svg)](https://www.rust-lang.org/)
-[![Interface: CLI](https://img.shields.io/badge/interface-CLI-64748b.svg)](#the-planned-cli)
+[![Interface: CLI](https://img.shields.io/badge/interface-CLI-64748b.svg)](#the-current-cli)
 [![License: TBD](https://img.shields.io/badge/license-to%20be%20decided-lightgrey.svg)](#project-status)
 
 *Every codebase is a labyrinth. Hecate helps you find the path to a worthwhile contribution.*
@@ -23,7 +23,7 @@ Contributing to an unfamiliar open-source project takes more than finding an iss
 
 That discovery process is often the hardest part.
 
-**Hecate is being designed to help contributors move from an unfamiliar repository to an evidence-backed, verified contribution.**
+**Hecate is being built to help contributors move from an unfamiliar repository to an evidence-backed contribution opportunity.**
 
 Give Hecate a GitHub repository. It will aim to map the codebase, investigate its history and ecosystem, discover improvement opportunities, and help turn a selected opportunity into a tested change—with the contributor in control.
 
@@ -75,7 +75,7 @@ flowchart TD
     class L,N,T output
 ```
 
-The diagram represents the **intended workflow**, not implemented functionality. The first milestone focuses on repository understanding and trustworthy opportunity discovery. Implementation and contribution assistance follow once the analysis is reliable.
+The diagram represents the **intended workflow**. Hecate currently supports local repository inspection and heuristic discovery from public GitHub issues. Independent validation, assisted implementation, and contribution preparation remain future work.
 
 ## What Hecate aims to do
 
@@ -110,26 +110,25 @@ Future implementation work should happen in isolated worktrees and restricted ex
 ### 6. Useful over impressive
 The goal is not to produce a long report or maximise the number of agents. The goal is to identify a small number of changes that genuinely help a project.
 
-## The first milestone
+## The current CLI
 
-The initial version will be deliberately narrow.
+Inspect a local repository or public GitHub repository:
 
 ```bash
+hecate inspect ./path/to/repository
 hecate inspect owner/repo
+hecate inspect https://github.com/owner/repo
 ```
 
-The first milestone aims to produce:
+Discover contribution opportunities from a public repository's open issues:
 
-- A concise repository overview.
-- A map of important modules and relationships.
-- A summary of relevant project conventions and dependencies.
-- A shortlist of evidence-backed improvement opportunities.
-- Impact, confidence, effort and risk assessments for each finding.
-- Source locations and supporting evidence so a contributor can investigate further.
+```bash
+hecate discover owner/repo
+```
 
-**Initial success criterion:** Hecate produces findings that a developer can independently inspect and judge useful—not merely plausible AI-generated suggestions.
+Discovery retrieves the default-branch source archive and paginated open issues, excludes pull requests, then applies the existing Rust analyzers and deterministic text matching to suggest possible files and symbols. Results include factor scores and matching evidence.
 
-Automatic code modification is intentionally outside the first milestone.
+All issue-to-code mappings and rankings are heuristic suggestions, not confirmed bugs or validated fixes. Current source analysis is Rust-focused. GitHub API rate limits apply to unauthenticated requests; set `GITHUB_TOKEN` or `GH_TOKEN` to use an optional token. Hecate does not modify source code or create pull requests.
 
 ## Planned architecture
 
@@ -248,13 +247,13 @@ These safeguards are design requirements; they are not yet implemented.
 
 ## Project status
 
-**Hecate is in the planning and architecture stage.** The vision, initial audience and product direction have been established. The CLI, agents, analysis pipeline and execution environment are planned work—not currently available features. The project license has not yet been selected.
+**Hecate is in early implementation.** The Rust CLI supports local inspection, public GitHub repository retrieval, Rust source analysis, open-issue retrieval, heuristic issue-to-code mapping, and contribution ranking. It does not yet research pull requests or discussions, independently validate candidates, or plan and implement changes. The project license has not yet been selected.
 
 This repository will evolve alongside the implementation. Design decisions, milestones and limitations should remain visible rather than being hidden behind ambitious claims.
 
 ## Contributing
 
-The project is not yet ready for external implementation contributions. Early feedback on the product direction, architecture, threat model and roadmap is welcome. Contribution guidelines will be added as the codebase takes shape.
+Early feedback on the product direction, architecture, threat model, and discovery quality is welcome. Contribution guidelines will be added as the codebase takes shape.
 
 ## Name
 
