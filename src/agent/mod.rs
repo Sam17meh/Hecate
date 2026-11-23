@@ -1,10 +1,11 @@
 //! HECATE-owned agent loop and capability boundaries.
 //!
-//! This foundation has no real model client and registers no production tools. Model providers
-//! return typed responses; requested tools can only resolve through the explicit registry and
-//! permission policy. Unknown tools and non-read-only permissions are denied by default.
+//! Model providers return typed responses; requested tools can only resolve through the explicit
+//! registry and permission policy. Unknown tools and non-read-only permissions are denied by
+//! default. Repository tools are read-only and capability-scoped to prepared workspaces.
 
 pub mod provider;
+pub mod repository_tools;
 pub mod runtime;
 pub mod session;
 pub mod tool;
@@ -13,6 +14,7 @@ pub use provider::{
     ConversationMessage, MessageRole, MockProvider, ModelProvider, ModelRequest, ModelResponse,
     ProviderError, ProviderErrorKind, TokenUsage, ToolCallRequest, ToolDefinition,
 };
+pub use repository_tools::WorkspaceRepositoryTools;
 pub use runtime::{AgentRuntime, CancellationToken, ExecutionLimits, RuntimeError};
 pub use session::{
     AGENT_SESSION_SCHEMA_VERSION, AgentSession, AgentStatus, ContributionContext,

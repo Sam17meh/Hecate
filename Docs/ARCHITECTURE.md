@@ -288,11 +288,19 @@ Current boundary:
 - `MockProvider` supplies deterministic responses for tests; no live provider or credentials are included.
 - `ToolRegistry` maps model-visible names to explicitly registered Rust `Tool` implementations. Models cannot dispatch arbitrary functions or shell commands.
 - Tool arguments are validated by their registered tool; unknown names are denied.
-- The default permission policy permits only read-only tools. No production tools are registered in this milestone.
+- The default permission policy permits only read-only tools. Milestone 4B registers workspace repository readers; no write or command tools are registered.
 - Sessions carry repository, issue, and human-approved plan-reference context plus serialized, versioned history and usage.
 - Iteration/tool-call limits, cancellation, malformed responses, provider errors, and tool errors reach explicit terminal states.
 
-The runtime is not exposed as a CLI command yet. It is not connected to workspace preparation, real model APIs, filesystem changes, shell execution, validation commands, or autonomous implementation. The existing human-reviewed workspace flow remains separate.
+### 8.1 Workspace Repository Tools
+
+Milestone 4B registers six read-only tools in `agent::repository_tools::WorkspaceRepositoryTools`: `list_files`, `read_file`, `search_code`, `inspect_symbol`, `find_references`, and `read_diff`. A bundle is constructed for a prepared checkout. Every invocation checks its repository and issue against the session context, the versioned workspace manifest, and the stored contribution plan. The session must also pass the existing approved-plan validation.
+
+Filesystem access uses `cap-std` directory capabilities rooted at the canonical checkout. Paths are relative; traversal and platform-qualified paths are rejected; symlinks are omitted or rejected; `.git`, `.hecate`, generated directories, and common credential files are excluded. File reads, search scans, match counts, symbol results, and Git diff output are bounded. `read_diff` calls Git with fixed arguments, disables external diff and text conversion, and cannot accept a model-selected command. Recognizable credentials are redacted from output.
+
+`inspect_symbol` reuses the existing tree-sitter Rust symbol analyzer. `find_references` reports parsed Rust declarations separately from approximate identifier-boundary text matches; the latter do not establish semantic references. Other languages receive textual search only. Secret-name filters and redaction are heuristic, and the checkout is not a complete sandbox: the tools do not isolate the host from malicious code or protect against every secret embedded in ordinary repository files.
+
+The tools are available through the existing runtime API but are not yet exposed by a CLI agent command. There is still no live model provider, file-writing or patch tool, shell access, repository-code execution, or validation runner. Milestone 4C is reserved for reviewed write/patch permissions; Milestone 4D is reserved for separately isolated validation and its reports. Neither is implemented.
 
 Multiple specialised agents can be considered later using the same structured artifacts, after a real provider and additional tool permissions receive their own review.
 
@@ -302,7 +310,7 @@ Repositories are untrusted inputs.
 
 Initial safeguards:
 - Never execute repository scripts during static inspection.
-- Ignore sensitive files and avoid reading secrets unnecessarily.
+- Filter common sensitive files and redact recognizable credential patterns in repository-tool output; these checks are heuristic.
 - Treat source comments and documentation as untrusted data.
 - Keep credentials out of model prompts.
 - Avoid modifying the original repository.

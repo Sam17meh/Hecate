@@ -250,9 +250,7 @@ The roadmap is ordered around proving reliability before increasing autonomy.
 
 ## Safety and trust
 
-Repositories are untrusted input. Source files, documentation, build scripts and dependencies can contain malicious instructions or executable behaviour.
-
-The planned execution model will therefore aim to:
+Repositories are untrusted input. Source files, documentation, build scripts and dependencies can contain malicious instructions or executable behaviour. The read-only tools below do not execute repository content. Any later execution capability must:
 
 - Separate reading and static analysis from code execution.
 - Run untrusted commands in disposable, restricted environments.
@@ -261,11 +259,15 @@ The planned execution model will therefore aim to:
 - Keep implementation attempts isolated from one another.
 - Require explicit human approval before upstream submission.
 
-These safeguards are design requirements; they are not yet implemented.
+The current native agent foundation includes six registered, read-only repository tools: `list_files`, `read_file`, `search_code`, `inspect_symbol`, `find_references`, and `read_diff`. They are bound to a prepared HECATE checkout, revalidate its workspace manifest and stored plan, and use a capability-scoped filesystem root. File access rejects absolute paths, traversal, symlinks and HECATE/Git metadata; scans and returned data have limits. Common credential filenames and recognizable secret lines are filtered or redacted.
+
+This is a restricted repository-reading interface, not a complete security sandbox. Repositories remain untrusted; no shell, build, test, or other repository process is run by these tools. Secret detection is heuristic and cannot guarantee that arbitrary credentials embedded in ordinary source files are recognized.
+
+Milestone 4C is expected to add explicitly reviewed patch/write capabilities behind human approval. Milestone 4D is expected to add separately isolated validation execution and reporting. Neither capability exists yet.
 
 ## Project status
 
-**Hecate is in early implementation.** The Rust CLI supports local inspection, public GitHub repository retrieval, Rust source analysis, open-issue retrieval, heuristic issue-to-code mapping and contribution ranking, evidence-backed draft plans, and explicitly approved isolated local Git workspaces. The codebase also has a native agent-loop foundation with a deterministic mock provider and mock-only tool interface. It has no live model integration or production agent tools, and cannot modify files or run commands through the agent runtime. Planning remains heuristic; workspace preparation does not execute repository code or modify source files. The project license has not yet been selected.
+**Hecate is in early implementation.** The Rust CLI supports local inspection, public GitHub repository retrieval, Rust source analysis, open-issue retrieval, heuristic issue-to-code mapping and contribution ranking, evidence-backed draft plans, and explicitly approved isolated local Git workspaces. Its native agent runtime has a deterministic mock provider and six production read-only repository tools. There is no live model integration, file-writing tool, shell tool, or validation runner. Planning and reference matching remain heuristic; workspace preparation does not execute repository code or modify source files. The project license has not yet been selected.
 
 This repository will evolve alongside the implementation. Design decisions, milestones and limitations should remain visible rather than being hidden behind ambitious claims.
 

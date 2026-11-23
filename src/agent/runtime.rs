@@ -201,15 +201,28 @@ impl<P: ModelProvider> AgentRuntime<P> {
 
             for call in response.tool_calls {
                 if cancellation.is_cancelled() {
+                    session.record_tool_call(
+                        call,
+                        Err("Agent run was cancelled before tool dispatch".into()),
+                    );
                     session.status = AgentStatus::Cancelled;
                     session.failure = Some("Agent run was cancelled between tool calls".into());
                     return Ok(());
                 }
                 session.usage.tool_calls += 1;
-                match self
+                let tool_result = self
                     .tools
-                    .execute(&call, self.policy.as_ref(), &tool_context)
-                {
+                    .execute(&call, self.policy.as_ref(), &tool_context);
+                if cancellation.is_cancelled() {
+                    session.record_tool_call(
+                        call,
+                        Err("Agent run was cancelled during tool execution".into()),
+                    );
+                    session.status = AgentStatus::Cancelled;
+                    session.failure = Some("Agent run was cancelled during tool execution".into());
+                    return Ok(());
+                }
+                match tool_result {
                     Ok(result) => session.record_tool_call(call, Ok(result)),
                     Err(error) => {
                         let runtime_error = RuntimeError::ToolCall {
@@ -651,6 +664,84 @@ mod tests {
         assert_eq!(session.status, AgentStatus::Cancelled);
         assert_eq!(session.usage.tool_calls, 0);
         assert!(executions.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn cancellation_during_tool_execution_enters_cancelled_terminal_state() {
+        struct CancellingTool;
+
+        impl Tool for CancellingTool {
+            fn definition(&self) -> ToolDefinition {
+                ToolDefinition {
+                    name: "cancel_lookup".into(),
+                    description: "Cancel this mock operation".into(),
+                    input_schema: json!({"type":"object", "additionalProperties":false}),
+                }
+            }
+
+            fn permission(&self) -> ToolPermission {
+                ToolPermission::ReadOnly
+            }
+
+            fn validate_arguments(
+                &self,
+                arguments: &Value,
+            ) -> Result<(), crate::agent::tool::ToolError> {
+                if arguments
+                    .as_object()
+                    .is_some_and(|object| object.is_empty())
+                {
+                    Ok(())
+                } else {
+                    Err(crate::agent::tool::ToolError::new(
+                        ToolErrorCode::InvalidArguments,
+                        "expected empty object",
+                    ))
+                }
+            }
+
+            fn execute(
+                &mut self,
+                _arguments: Value,
+                context: &ToolContext,
+            ) -> Result<ToolResult, crate::agent::tool::ToolError> {
+                context.cancellation.cancel();
+                Err(crate::agent::tool::ToolError::new(
+                    ToolErrorCode::ExecutionFailed,
+                    "cancelled mock operation",
+                ))
+            }
+        }
+
+        let mut tools = ToolRegistry::new();
+        tools.register(Box::new(CancellingTool)).unwrap();
+        let provider = MockProvider::from_responses([tool_response(vec![call(
+            "cancel-during-tool",
+            "cancel_lookup",
+            json!({}),
+        )])]);
+        let mut runtime = AgentRuntime::new(provider, tools, ExecutionLimits::default());
+        let mut session = make_session();
+        runtime
+            .run(&mut session, &CancellationToken::default())
+            .unwrap();
+        assert_eq!(session.status, AgentStatus::Cancelled);
+        assert_eq!(session.usage.tool_calls, 1);
+        assert_eq!(session.tool_calls.len(), 1);
+        assert!(
+            session.tool_calls[0]
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("during tool execution")
+        );
+        assert!(
+            session
+                .failure
+                .as_deref()
+                .unwrap()
+                .contains("during tool execution")
+        );
     }
 
     struct CancellingProvider {

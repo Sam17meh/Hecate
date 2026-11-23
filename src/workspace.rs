@@ -1,14 +1,17 @@
 use crate::github::{GitHubClient, GitHubRepository};
 use crate::planning::ContributionPlan;
+use cap_std::ambient_authority;
+use cap_std::fs::Dir;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const PLAN_SCHEMA_VERSION: u32 = 1;
 const WORKSPACE_SCHEMA_VERSION: u32 = 1;
+const MAX_PLAN_METADATA_BYTES: u64 = 2 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspacePreview {
@@ -254,6 +257,25 @@ fn create_workspace_from_source(
     })
 }
 
+#[cfg(test)]
+pub(crate) fn preview_workspace_for_tests(
+    repository: &GitHubRepository,
+    issue_number: u64,
+    root: &Path,
+) -> Result<WorkspacePreview, String> {
+    preview_workspace(repository, issue_number, root)
+}
+
+#[cfg(test)]
+pub(crate) fn create_workspace_from_source_for_tests(
+    repository: &GitHubRepository,
+    plan: &ContributionPlan,
+    preview: &WorkspacePreview,
+    source_url: &str,
+) -> Result<WorkspaceResult, String> {
+    create_workspace_from_source(repository, plan, preview, source_url)
+}
+
 pub fn save_plan(path: &Path, plan: &ContributionPlan) -> Result<(), String> {
     validate_plan(plan)?;
     let stored = StoredContributionPlan {
@@ -264,9 +286,28 @@ pub fn save_plan(path: &Path, plan: &ContributionPlan) -> Result<(), String> {
 }
 
 pub fn load_plan(path: &Path) -> Result<ContributionPlan, String> {
-    let content = fs::read_to_string(path)
+    let metadata = fs::metadata(path)
+        .map_err(|error| format!("Could not inspect stored contribution plan: {error}"))?;
+    if metadata.len() > MAX_PLAN_METADATA_BYTES {
+        return Err("Stored contribution plan exceeds the 2 MiB metadata limit".into());
+    }
+    let mut content = Vec::with_capacity(metadata.len() as usize);
+    OpenOptions::new()
+        .read(true)
+        .open(path)
+        .and_then(|file| {
+            file.take(MAX_PLAN_METADATA_BYTES + 1)
+                .read_to_end(&mut content)
+        })
         .map_err(|error| format!("Could not read stored contribution plan: {error}"))?;
-    let stored: StoredContributionPlan = serde_json::from_str(&content)
+    if content.len() as u64 > MAX_PLAN_METADATA_BYTES {
+        return Err("Stored contribution plan exceeds the 2 MiB metadata limit".into());
+    }
+    decode_plan(&content)
+}
+
+fn decode_plan(content: &[u8]) -> Result<ContributionPlan, String> {
+    let stored: StoredContributionPlan = serde_json::from_slice(content)
         .map_err(|error| format!("Could not decode stored contribution plan: {error}"))?;
     if stored.schema_version != PLAN_SCHEMA_VERSION {
         return Err(format!(
@@ -276,6 +317,105 @@ pub fn load_plan(path: &Path) -> Result<ContributionPlan, String> {
     }
     validate_plan(&stored.plan)?;
     Ok(stored.plan)
+}
+
+/// Validate that a tool session points at the checkout and approved plan recorded when HECATE
+/// prepared this workspace. The returned path is canonical and is suitable for capability roots.
+pub fn validate_prepared_workspace(
+    checkout_path: &Path,
+    repository_url: &str,
+    issue_number: u64,
+    plan_artifact_id: &str,
+) -> Result<PathBuf, String> {
+    let checkout = fs::canonicalize(checkout_path)
+        .map_err(|error| format!("Could not resolve approved workspace checkout: {error}"))?;
+    let workspace = checkout
+        .parent()
+        .ok_or_else(|| "Workspace checkout has no workspace parent".to_string())?;
+    let workspace = fs::canonicalize(workspace)
+        .map_err(|error| format!("Could not resolve approved workspace: {error}"))?;
+    let workspace_dir = Dir::open_ambient_dir(&workspace, ambient_authority())
+        .map_err(|error| format!("Could not open prepared workspace metadata root: {error}"))?;
+    let metadata_type = workspace_dir
+        .symlink_metadata(".hecate")
+        .map_err(|error| format!("Could not inspect workspace metadata directory: {error}"))?;
+    if metadata_type.file_type().is_symlink() || !metadata_type.is_dir() {
+        return Err("Workspace metadata directory is not a regular directory".into());
+    }
+    let manifest_type = workspace_dir
+        .symlink_metadata(".hecate/workspace-v1.json")
+        .map_err(|error| format!("Could not inspect workspace approval manifest: {error}"))?;
+    if manifest_type.file_type().is_symlink() || !manifest_type.is_file() {
+        return Err("Workspace approval manifest is not a regular file".into());
+    }
+    let manifest_bytes =
+        read_workspace_metadata(&workspace_dir, ".hecate/workspace-v1.json", 64 * 1024)?;
+    let manifest: WorkspaceManifest = serde_json::from_slice(&manifest_bytes)
+        .map_err(|error| format!("Could not decode workspace approval manifest: {error}"))?;
+    if manifest.schema_version != WORKSPACE_SCHEMA_VERSION
+        || manifest.checkout_path != "repository"
+        || manifest.plan_path != ".hecate/plan-v1.json"
+        || manifest.issue_number != issue_number
+        || manifest.plan_path != plan_artifact_id
+    {
+        return Err(
+            "Workspace manifest does not match the approved issue and plan reference".into(),
+        );
+    }
+    let (expected_owner, expected_name) = GitHubClient::parse_repository(repository_url)?;
+    let (manifest_owner, manifest_name) = GitHubClient::parse_repository(&manifest.repository_url)?;
+    if !expected_owner.eq_ignore_ascii_case(&manifest_owner)
+        || !expected_name.eq_ignore_ascii_case(&manifest_name)
+    {
+        return Err("Workspace manifest belongs to a different GitHub repository".into());
+    }
+    let expected_checkout = fs::canonicalize(workspace.join("repository"))
+        .map_err(|error| format!("Could not validate workspace checkout: {error}"))?;
+    if checkout != expected_checkout {
+        return Err("Requested checkout does not match the workspace manifest".into());
+    }
+    let plan_type = workspace_dir
+        .symlink_metadata(&manifest.plan_path)
+        .map_err(|error| format!("Could not inspect stored contribution plan: {error}"))?;
+    if plan_type.file_type().is_symlink() || !plan_type.is_file() {
+        return Err("Stored contribution plan is not a regular file".into());
+    }
+    let plan_bytes = read_workspace_metadata(
+        &workspace_dir,
+        &manifest.plan_path,
+        MAX_PLAN_METADATA_BYTES as usize,
+    )?;
+    let plan = decode_plan(&plan_bytes)?;
+    if plan.issue_number != issue_number {
+        return Err("Stored contribution plan does not match the selected issue".into());
+    }
+    let (plan_owner, plan_name) = GitHubClient::parse_repository(&plan.repository_url)?;
+    if !expected_owner.eq_ignore_ascii_case(&plan_owner)
+        || !expected_name.eq_ignore_ascii_case(&plan_name)
+    {
+        return Err("Stored contribution plan belongs to a different repository".into());
+    }
+    Ok(checkout)
+}
+
+fn read_workspace_metadata(root: &Dir, relative: &str, limit: usize) -> Result<Vec<u8>, String> {
+    let metadata = root
+        .symlink_metadata(relative)
+        .map_err(|error| format!("Could not inspect workspace metadata file: {error}"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err("Workspace metadata path is not a regular file".into());
+    }
+    if metadata.len() > limit as u64 {
+        return Err(format!("Workspace metadata exceeds the {limit}-byte limit"));
+    }
+    let mut content = Vec::with_capacity(metadata.len() as usize);
+    root.open(relative)
+        .and_then(|file| file.take(limit as u64 + 1).read_to_end(&mut content))
+        .map_err(|error| format!("Could not read workspace metadata file: {error}"))?;
+    if content.len() > limit {
+        return Err(format!("Workspace metadata exceeds the {limit}-byte limit"));
+    }
+    Ok(content)
 }
 
 fn write_json_new<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
