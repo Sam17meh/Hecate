@@ -7,6 +7,7 @@ use analysis::findings::build_findings;
 use analysis::import_resolution::{ImportResolutionKind, build_import_resolution};
 use analysis::module_index::build_module_index;
 use analysis::symbols::analyze_repository;
+use analysis::test_gaps::analyze_test_gaps;
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 
@@ -322,6 +323,56 @@ fn main() {
                                     println!(
                                         "Total symbol diagnostics: {}",
                                         symbol_analysis.diagnostics.len()
+                                    );
+
+                                    println!("\n--- Rust Test Gap Analysis ---");
+
+                                    let test_gap_analysis = analyze_test_gaps(
+                                        &info.source_files,
+                                        &info.root,
+                                        &symbol_analysis,
+                                    );
+
+                                    println!(
+                                        "Potential test gaps: {}",
+                                        test_gap_analysis.gaps.len()
+                                    );
+
+                                    if test_gap_analysis.gaps.is_empty() {
+                                        println!("  No potential test gaps detected.");
+                                    } else {
+                                        for gap in &test_gap_analysis.gaps {
+                                            println!(
+                                                "\n  {} - {}:{}-{}",
+                                                gap.symbol.name,
+                                                gap.symbol.file,
+                                                gap.symbol.start_line,
+                                                gap.symbol.end_line
+                                            );
+
+                                            println!("    {}", gap.explanation);
+                                        }
+                                    }
+
+                                    println!("\nTest Gap Diagnostics");
+
+                                    if test_gap_analysis.diagnostics.is_empty() {
+                                        println!("  No test gap analysis diagnostics.");
+                                    } else {
+                                        for diagnostic in &test_gap_analysis.diagnostics {
+                                            println!("  File: {}", diagnostic.file);
+
+                                            println!("  Error: {}", diagnostic.message);
+                                        }
+                                    }
+
+                                    println!(
+                                        "Total test gap diagnostics: {}",
+                                        test_gap_analysis.diagnostics.len()
+                                    );
+
+                                    println!(
+                                        "Note: Test gap detection is heuristic, not runtime coverage."
                                     );
 
                                     let import_analysis = build_import_resolution(
