@@ -102,8 +102,18 @@ impl ModelResponse {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderErrorKind {
+    Configuration,
+    Authentication,
+    RateLimited,
+    Timeout,
     Unavailable,
     InvalidRequest,
+    ServerFailure,
+    RequestTooLarge,
+    ResponseTooLarge,
+    MalformedResponse,
+    IncompleteResponse,
+    ContentFiltered,
     ResponseFailure,
     MockExhausted,
 }
@@ -125,6 +135,36 @@ impl ProviderError {
 
 pub trait ModelProvider {
     fn complete(&mut self, request: ModelRequest) -> Result<ModelResponse, ProviderError>;
+
+    /// Sanitize untrusted text before it is retained in a session or sent to a provider.
+    /// Providers without provider-specific secrets may keep the default identity behavior.
+    fn sanitize_untrusted_text(&self, text: &str) -> String {
+        text.to_string()
+    }
+
+    /// Sanitize strings inside untrusted structured content using this provider's text policy.
+    fn sanitize_untrusted_value(&self, value: &mut Value) {
+        fn visit<P: ModelProvider + ?Sized>(provider: &P, value: &mut Value) {
+            match value {
+                Value::String(text) => *text = provider.sanitize_untrusted_text(text),
+                Value::Array(values) => {
+                    for value in values {
+                        visit(provider, value);
+                    }
+                }
+                Value::Object(object) => {
+                    let old = std::mem::take(object);
+                    for (key, mut value) in old {
+                        visit(provider, &mut value);
+                        object.insert(provider.sanitize_untrusted_text(&key), value);
+                    }
+                }
+                Value::Null | Value::Bool(_) | Value::Number(_) => {}
+            }
+        }
+
+        visit(self, value);
+    }
 }
 
 /// Deterministic scripted provider for tests and runtime demonstrations.

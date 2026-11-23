@@ -1,6 +1,6 @@
 # HECATE architecture
 
-HECATE is a modular Rust CLI application. Deterministic repository access and analysis produce typed evidence; discovery and planning use that evidence to create heuristic recommendations. A separate native agent runtime can call explicitly registered tools, but it is not yet wired to a CLI command or a live model provider.
+HECATE is a modular Rust CLI application. Deterministic repository access and analysis produce typed evidence; discovery and planning use that evidence to create heuristic recommendations. A separate native agent runtime can use a mock provider or a configurable OpenAI-compatible Chat Completions provider to request explicitly registered tools. The runtime is not wired to a CLI command.
 
 ## Components
 
@@ -14,7 +14,7 @@ HECATE is a modular Rust CLI application. Deterministic repository access and an
 | `src/discovery.rs` | Maps issue text to candidate files/symbols using deterministic text and repository relationships, then calculates an explainable heuristic ranking. |
 | `src/planning.rs` | Builds a structured, reviewable plan using issue metadata, discovery matches, repository relationships, test-gap signals, and relevant Markdown excerpts. |
 | `src/workspace.rs` | Requires approval to create a dedicated clone/issue branch, stores versioned plan and manifest metadata, and revalidates prepared workspaces. |
-| `src/agent/` | Provider-independent request/response types, mock provider, runtime loop, session state, tool definitions/registry/policies, and prepared-workspace readers. |
+| `src/agent/` | Provider-independent request/response types, mock and OpenAI-compatible providers, runtime loop, session state, tool definitions/registry/policies, and prepared-workspace readers. |
 
 The current analysis is Rust-focused. Repository inventory recognizes several language extensions, but module, import, symbol, dependency, architecture, findings, and test-gap analysis is implemented around Rust. Other languages can be inventoried and searched as text by repository tools.
 
@@ -49,11 +49,11 @@ The agent subsystem is currently a library-like internal module in the binary, n
 5. The registry dispatches only to an explicitly registered `Tool`; result/error records are added to the session.
 6. The loop ends in a terminal state or reaches iteration/tool-call limits.
 
-The only provider implementation is `MockProvider`. The six registered repository tools are read-only and validate the workspace manifest and stored plan before access. See [AGENT_RUNTIME.md](AGENT_RUNTIME.md), [PROVIDERS.md](PROVIDERS.md), and [SECURITY.md](SECURITY.md).
+`MockProvider` supports deterministic tests; `OpenAiCompatibleProvider` translates Chat Completions requests and responses behind the same provider interface. The six registered repository tools are read-only and validate the workspace manifest and stored plan before access. See [AGENT_RUNTIME.md](AGENT_RUNTIME.md), [PROVIDERS.md](PROVIDERS.md), and [SECURITY.md](SECURITY.md).
 
 ## Current boundaries
 
-- No live model API provider, agent CLI command, MCP support, or persistent session store.
+- No agent CLI command, MCP support, or persistent session store. The configurable provider targets the OpenAI-compatible Chat Completions protocol; other API protocols are not implemented.
 - No file-writing/patch tool, arbitrary command tool, repository-code execution, or validation runner.
 - Discovery and test-gap results are heuristic leads, not confirmation of a defect or absent coverage.
 - A Git clone is workspace isolation from the user's original checkout, not an operating-system security sandbox.

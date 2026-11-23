@@ -75,7 +75,7 @@ flowchart TD
     class L,N,T output
 ```
 
-The diagram represents the **intended workflow**. Hecate currently supports local repository inspection and heuristic discovery from public GitHub issues. Independent validation, assisted implementation, and contribution preparation remain future work.
+The diagram represents the **intended workflow**. Hecate currently supports local repository inspection, heuristic discovery from public GitHub issues, contribution planning, and approved local workspace preparation. Assisted implementation and independent validation remain future work.
 
 ## What Hecate aims to do
 
@@ -233,7 +233,7 @@ The canonical implementation documentation is in [`docs/`](docs/):
 
 ## Roadmap
 
-Repository inspection, GitHub contribution discovery, planning, approved workspace preparation, the mock-backed native runtime, and read-only repository tools are implemented. The agent runtime is not yet available through a CLI command. The next proposed work is a human-reviewed patch-application design; live model providers and isolated validation remain separate future work. See the [detailed roadmap](docs/ROADMAP.md).
+Repository inspection, GitHub contribution discovery, planning, approved workspace preparation, and the native agent runtime are implemented. The runtime includes a mock provider and a configurable OpenAI-compatible Chat Completions provider, plus read-only repository tools; it is not yet available through a CLI command. Controlled implementation (4D) and independent review/verification (5) remain future work. See the [detailed roadmap](docs/ROADMAP.md).
 
 ## Safety and trust
 
@@ -250,11 +250,13 @@ The current native agent foundation includes six registered, read-only repositor
 
 This is a restricted repository-reading interface, not a complete security sandbox. Repositories remain untrusted; no shell, build, test, or other repository process is run by these tools. Secret detection is heuristic and cannot guarantee that arbitrary credentials embedded in ordinary source files are recognized.
 
-The next proposed step is a separately reviewed patch-application capability. Isolated validation execution and reporting are also future work. Neither capability exists yet.
+When the native runtime is used, conversation context, repository excerpts, and tool results are sent to the configured model provider. Configure only a provider trusted with that repository data. Exact configured-key redaction helps prevent accidental exposure but does not replace secret management or guarantee detection of every secret. No user-facing agent CLI or provider consent workflow is implemented yet. Provider request-size limits are separate from HTTP timeouts; see the [provider guide](docs/PROVIDERS.md).
+
+The runtime now includes a real provider adapter and deterministic reliability/integration coverage. Controlled human-approved implementation and independent review/verification remain future work; neither is implemented.
 
 ## Project status
 
-**Hecate is in early implementation.** The CLI supports local inspection, public GitHub repository retrieval, Rust source analysis, open-issue retrieval, heuristic issue-to-code mapping and contribution ranking, evidence-backed draft plans, and explicitly approved isolated local Git workspaces. Its internal native agent runtime has a deterministic mock provider and six read-only repository tools, but no agent CLI command. There is no live model integration, file-writing tool, shell tool, or validation runner. Planning and reference matching remain heuristic; workspace preparation does not execute repository code or modify source files. The project license has not yet been selected.
+**Hecate is in early implementation.** The CLI supports local inspection, public GitHub repository retrieval, Rust source analysis, open-issue retrieval, heuristic issue-to-code mapping and contribution ranking, evidence-backed draft plans, and explicitly approved isolated local Git workspaces. Its internal native agent runtime has a deterministic mock provider, a configurable OpenAI-compatible Chat Completions provider, and six read-only repository tools, but no agent CLI command. There is no file-writing tool, shell tool, or validation runner. Planning and reference matching remain heuristic; workspace preparation does not execute repository code or modify source files. The project license has not yet been selected.
 
 This repository will evolve alongside the implementation. Design decisions, milestones and limitations should remain visible rather than being hidden behind ambitious claims.
 

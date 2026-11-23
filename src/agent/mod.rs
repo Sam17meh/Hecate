@@ -4,12 +4,17 @@
 //! registry and permission policy. Unknown tools and non-read-only permissions are denied by
 //! default. Repository tools are read-only and capability-scoped to prepared workspaces.
 
+pub mod openai_compatible;
 pub mod provider;
 pub mod repository_tools;
 pub mod runtime;
 pub mod session;
 pub mod tool;
 
+#[cfg(test)]
+pub(crate) mod provider_test_support;
+
+pub use openai_compatible::{OpenAiCompatibleConfig, OpenAiCompatibleProvider};
 pub use provider::{
     ConversationMessage, MessageRole, MockProvider, ModelProvider, ModelRequest, ModelResponse,
     ProviderError, ProviderErrorKind, TokenUsage, ToolCallRequest, ToolDefinition,
