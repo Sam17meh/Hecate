@@ -137,7 +137,7 @@ hecate plan https://github.com/owner/repo 123
 
 Planning retrieves the same cached repository snapshot and current open issues, then includes issue metadata, candidate code locations, module/import relationships, applicable heuristic test-gap signals, and relevant README/CONTRIBUTING/docs excerpts. It proposes implementation steps, test recommendations, validation commands, risks, assumptions, and unresolved questions. The command only reads and analyzes repository content; it does not implement the issue or modify the target repository. Review the plan and confirm issue scope before any future implementation.
 
-After reviewing a plan, prepare an isolated local clone for that issue. HECATE shows the target and asks for explicit confirmation before creating files:
+After reviewing a plan, prepare an isolated local clone for that issue. HECATE retrieves/analyzes the repository first (which may populate its source cache), then shows the target and asks for explicit confirmation before creating the contribution workspace:
 
 ```bash
 hecate prepare owner/repo 123
@@ -208,45 +208,32 @@ The architecture is a direction, not a locked implementation specification. A ke
 The current direction is:
 
 - **Rust** for the core application, CLI, orchestration and execution infrastructure.
-- **Tokio** for asynchronous tasks and concurrency.
+- **Synchronous Rust CLI** in the current implementation; an async runtime has not been selected.
 - **Tree-sitter** for language-aware source parsing.
-- **Git worktrees** for isolated implementation attempts.
+- **Dedicated local clones** for approved workspace preparation; future execution isolation is not implemented.
 - **SQLite** as a possible local persistence layer for early versions.
 - **Serde** for typed, serialisable artifacts.
 - **LLM provider abstraction** to avoid tying the project to one model vendor.
 - **MCP support** as a possible additional interface after the core workflow is established.
 
-Technology choices will be validated during architecture design. Hecate will avoid unnecessary microservices and avoid adding dependencies just because they are fashionable.
+SQLite and MCP remain possibilities, not current dependencies or implemented features. Hecate will avoid unnecessary microservices and dependencies.
+
+## Documentation
+
+The canonical implementation documentation is in [`docs/`](docs/):
+
+- [Architecture and data flow](docs/ARCHITECTURE.md)
+- [Native agent runtime](docs/AGENT_RUNTIME.md)
+- [Security boundaries](docs/SECURITY.md)
+- [Provider contract](docs/PROVIDERS.md)
+- [Implementation status and roadmap](docs/ROADMAP.md)
+- [Instructions for coding agents](AGENTS.md)
+
+[`docs/MVP.md`](docs/MVP.md) is an earlier product specification. The canonical roadmap and current source describe implemented behavior.
 
 ## Roadmap
 
-The roadmap is ordered around proving reliability before increasing autonomy.
-
-- [ ] **Phase 0 — Product and architecture**
-  - [ ] Define requirements, scope and success criteria
-  - [ ] Finalise the system architecture and agent contracts
-  - [ ] Establish threat model and execution boundaries
-- [ ] **Phase 1 — Repository reconnaissance**
-  - [ ] Rust workspace and CLI foundation
-  - [ ] GitHub repository retrieval and local checkout
-  - [ ] File, language and dependency inventory
-  - [ ] Initial repository map and report
-- [ ] **Phase 2 — Repository intelligence**
-  - [ ] Symbol and module extraction
-  - [ ] Import and dependency relationships
-  - [ ] Architecture summary with source references
-- [ ] **Phase 3 — Opportunity discovery**
-  - [ ] Research issues, pull requests and documentation
-  - [ ] Generate evidence-backed improvement candidates
-  - [ ] Rank candidates and independently validate findings
-- [ ] **Phase 4 — Assisted engineering**
-  - [ ] Contributor-approved implementation plans
-  - [ ] Isolated worktree and sandbox execution
-  - [ ] Test, benchmark and verification reports
-- [ ] **Phase 5 — Contribution workflow**
-  - [ ] Reviewable patch generation
-  - [ ] Pull request preparation
-  - [ ] Human-controlled submission
+Repository inspection, GitHub contribution discovery, planning, approved workspace preparation, the mock-backed native runtime, and read-only repository tools are implemented. The agent runtime is not yet available through a CLI command. The next proposed work is a human-reviewed patch-application design; live model providers and isolated validation remain separate future work. See the [detailed roadmap](docs/ROADMAP.md).
 
 ## Safety and trust
 
@@ -263,11 +250,11 @@ The current native agent foundation includes six registered, read-only repositor
 
 This is a restricted repository-reading interface, not a complete security sandbox. Repositories remain untrusted; no shell, build, test, or other repository process is run by these tools. Secret detection is heuristic and cannot guarantee that arbitrary credentials embedded in ordinary source files are recognized.
 
-Milestone 4C is expected to add explicitly reviewed patch/write capabilities behind human approval. Milestone 4D is expected to add separately isolated validation execution and reporting. Neither capability exists yet.
+The next proposed step is a separately reviewed patch-application capability. Isolated validation execution and reporting are also future work. Neither capability exists yet.
 
 ## Project status
 
-**Hecate is in early implementation.** The Rust CLI supports local inspection, public GitHub repository retrieval, Rust source analysis, open-issue retrieval, heuristic issue-to-code mapping and contribution ranking, evidence-backed draft plans, and explicitly approved isolated local Git workspaces. Its native agent runtime has a deterministic mock provider and six production read-only repository tools. There is no live model integration, file-writing tool, shell tool, or validation runner. Planning and reference matching remain heuristic; workspace preparation does not execute repository code or modify source files. The project license has not yet been selected.
+**Hecate is in early implementation.** The CLI supports local inspection, public GitHub repository retrieval, Rust source analysis, open-issue retrieval, heuristic issue-to-code mapping and contribution ranking, evidence-backed draft plans, and explicitly approved isolated local Git workspaces. Its internal native agent runtime has a deterministic mock provider and six read-only repository tools, but no agent CLI command. There is no live model integration, file-writing tool, shell tool, or validation runner. Planning and reference matching remain heuristic; workspace preparation does not execute repository code or modify source files. The project license has not yet been selected.
 
 This repository will evolve alongside the implementation. Design decisions, milestones and limitations should remain visible rather than being hidden behind ambitious claims.
 
