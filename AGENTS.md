@@ -28,6 +28,10 @@ Sessions carry repository, issue, and approved plan-reference context. Repositor
 
 `OpenAiCompatibleProvider` reads `HECATE_API_KEY`, `HECATE_BASE_URL`, and `HECATE_MODEL`; optional timeout, request-size, and response-size variables are documented in [PROVIDERS.md](docs/PROVIDERS.md). Keep credentials out of logs, errors, session state, and documentation.
 
+`src/agent/patch.rs` defines untrusted structured patch proposals. `src/agent/patch_validation.rs` validates replace/create proposals read-only against the in-process workspace capabilities returned by preparation and computes results in memory. Bound serialized proposal bytes before serde deserialization; validator limits apply afterward. A validated proposal is not approval; no patch application or interactive approval flow exists yet. See [SECURITY.md](docs/SECURITY.md) for capability and platform limits.
+
+Workspace preparation is bounded local-CLI protection, not an adversarial filesystem boundary: creation and Git operations use paths, with identity checks before and after operations. These checks detect many substitutions but cannot prevent every concurrent replacement. A malicious same-user process with write access to the selected workspace parent is outside the current threat model. Capability-relative patch validation protects reads after capabilities are established; it does not retroactively secure preparation. Do not describe preparation as race-free or the workspace as an OS sandbox. Windows ordinal path comparison is not a universal filesystem-equivalence guarantee. See [SECURITY.md](docs/SECURITY.md).
+
 Conversation context, repository excerpts, and tool results are sent to the configured model provider. Only configure a provider trusted with that repository data. Exact configured-key redaction reduces accidental exposure but is not complete secret detection or a substitute for secret management. No user-facing agent CLI or provider consent workflow exists yet.
 
 ## Development

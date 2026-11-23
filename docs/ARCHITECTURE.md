@@ -15,6 +15,7 @@ HECATE is a modular Rust CLI application. Deterministic repository access and an
 | `src/planning.rs` | Builds a structured, reviewable plan using issue metadata, discovery matches, repository relationships, test-gap signals, and relevant Markdown excerpts. |
 | `src/workspace.rs` | Requires approval to create a dedicated clone/issue branch, stores versioned plan and manifest metadata, and revalidates prepared workspaces. |
 | `src/agent/` | Provider-independent request/response types, mock and OpenAI-compatible providers, runtime loop, session state, tool definitions/registry/policies, and prepared-workspace readers. |
+| `src/agent/patch.rs`, `src/agent/patch_validation.rs` | Untrusted typed replace/create proposals and read-only validation against prepared workspace identity; calculates results and preview in memory without applying changes. |
 
 The current analysis is Rust-focused. Repository inventory recognizes several language extensions, but module, import, symbol, dependency, architecture, findings, and test-gap analysis is implemented around Rust. Other languages can be inventoried and searched as text by repository tools.
 
@@ -57,5 +58,6 @@ The agent subsystem is currently a library-like internal module in the binary, n
 - No file-writing/patch tool, arbitrary command tool, repository-code execution, or validation runner.
 - Discovery and test-gap results are heuristic leads, not confirmation of a defect or absent coverage.
 - A Git clone is workspace isolation from the user's original checkout, not an operating-system security sandbox.
+- Preparation and Git use path-based operations. Lifecycle identity checks detect many substitutions but cannot prevent every concurrent path replacement. A malicious same-user process with write access to the selected workspace parent is outside the bounded local-CLI threat model. Capability-relative patch validation protects reads only after capabilities have been established; it does not secure preparation retroactively. Windows ordinal path comparison is not universal filesystem equivalence.
 
 The current implementation status and proposed work are tracked in [ROADMAP.md](ROADMAP.md). The source code is authoritative when documentation and implementation disagree.

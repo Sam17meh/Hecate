@@ -923,7 +923,7 @@ fn scan_files(
     ))
 }
 
-fn has_multiple_links(file: &std::fs::File, metadata: &std::fs::Metadata) -> bool {
+pub(crate) fn has_multiple_links(file: &std::fs::File, metadata: &std::fs::Metadata) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt as StdMetadataExt;
@@ -1075,7 +1075,7 @@ fn read_text_file(root: &Dir, path: &Path, max_bytes: u64) -> Result<Option<Stri
     Ok(String::from_utf8(bytes).ok())
 }
 
-fn safe_relative_path(value: &str) -> Result<PathBuf, ToolError> {
+pub(crate) fn safe_relative_path(value: &str) -> Result<PathBuf, ToolError> {
     if value.is_empty() || value.len() > MAX_PATH_BYTES {
         return Err(invalid_arg("path must be nonempty and at most 4096 bytes"));
     }
@@ -1094,7 +1094,6 @@ fn safe_relative_path(value: &str) -> Result<PathBuf, ToolError> {
                 "Empty path components, `.` and parent traversal are denied",
             ));
         }
-        #[cfg(windows)]
         if is_windows_alias_component(component) {
             return Err(tool_error(
                 ToolErrorCode::PermissionDenied,
@@ -1112,7 +1111,6 @@ fn safe_relative_path(value: &str) -> Result<PathBuf, ToolError> {
     Ok(normalized)
 }
 
-#[cfg(windows)]
 fn is_windows_alias_component(component: &str) -> bool {
     if component.ends_with(['.', ' ']) {
         return true;
@@ -1137,7 +1135,7 @@ fn is_windows_alias_component(component: &str) -> bool {
     })
 }
 
-fn is_excluded(path: &Path) -> bool {
+pub(crate) fn is_excluded(path: &Path) -> bool {
     path.components().any(|component| {
         let Component::Normal(component) = component else {
             return true;
@@ -1191,7 +1189,7 @@ fn is_excluded(path: &Path) -> bool {
     })
 }
 
-fn is_text_candidate(path: &Path) -> bool {
+pub(crate) fn is_text_candidate(path: &Path) -> bool {
     matches!(
         path.extension()
             .and_then(|extension| extension.to_str())

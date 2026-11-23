@@ -5,6 +5,8 @@
 //! default. Repository tools are read-only and capability-scoped to prepared workspaces.
 
 pub mod openai_compatible;
+pub mod patch;
+pub mod patch_validation;
 pub mod provider;
 pub mod repository_tools;
 pub mod runtime;

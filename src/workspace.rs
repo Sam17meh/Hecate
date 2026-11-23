@@ -1,8 +1,10 @@
 use crate::github::{GitHubClient, GitHubRepository};
 use crate::planning::ContributionPlan;
 use cap_std::ambient_authority;
-use cap_std::fs::Dir;
+use cap_std::fs::{Dir, OpenOptions as CapOpenOptions, OpenOptionsExt};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::ffi::{OsStr, OsString};
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -20,7 +22,6 @@ pub struct WorkspacePreview {
     pub branch: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceResult {
     pub path: PathBuf,
     pub checkout_path: PathBuf,
@@ -28,6 +29,43 @@ pub struct WorkspaceResult {
     pub branch: String,
     pub commit: String,
     pub git_status: String,
+    // These are the in-process identity anchor for read-only validation. Keep them private so
+    // callers can consume preparation results but cannot construct a trusted result themselves.
+    workspace_capability: Dir,
+    workspace_parent_capability: Dir,
+    workspace_name: OsString,
+    metadata_capability: Dir,
+    checkout_capability: Dir,
+    manifest_sha256: String,
+    plan_sha256: String,
+}
+
+impl WorkspaceResult {
+    pub(crate) fn validation_capabilities(&self) -> (&Dir, &Dir, &OsStr, &Dir, &Dir, &str, &str) {
+        (
+            &self.workspace_capability,
+            &self.workspace_parent_capability,
+            &self.workspace_name,
+            &self.metadata_capability,
+            &self.checkout_capability,
+            &self.manifest_sha256,
+            &self.plan_sha256,
+        )
+    }
+}
+
+impl std::fmt::Debug for WorkspaceResult {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WorkspaceResult")
+            .field("path", &self.path)
+            .field("checkout_path", &self.checkout_path)
+            .field("plan_path", &self.plan_path)
+            .field("branch", &self.branch)
+            .field("commit", &self.commit)
+            .field("git_status", &self.git_status)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,44 +157,77 @@ fn create_workspace_from_source(
     validate_branch_name(&repository.default_branch)?;
     validate_branch_name(&preview.branch)?;
     ensure_remote_branch_available(source_url, &preview.branch)?;
-    fs::create_dir_all(
-        preview
-            .path
-            .parent()
-            .ok_or_else(|| "Workspace path has no parent directory".to_string())?,
-    )
-    .map_err(|error| format!("Could not create workspace parent: {error}"))?;
-    fs::create_dir(&preview.path).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::AlreadyExists {
-            format!(
-                "Workspace already exists at {}; it will not be overwritten",
-                preview.path.display()
-            )
-        } else {
-            format!(
-                "Could not reserve workspace {}: {error}",
-                preview.path.display()
-            )
-        }
-    })?;
+    let parent_path = preview
+        .path
+        .parent()
+        .ok_or_else(|| "Workspace path has no parent directory".to_string())?;
+    let workspace_name = preview
+        .path
+        .file_name()
+        .ok_or_else(|| "Workspace path has no final component".to_string())?
+        .to_os_string();
+    fs::create_dir_all(parent_path)
+        .map_err(|error| format!("Could not create workspace parent: {error}"))?;
+    // Keep the selected parent open before creating the issue directory and perform creation
+    // relative to this handle. The local-CLI threat model excludes a malicious concurrent actor
+    // with write access to this parent; mkdir and subsequent no-follow open are not atomic.
+    let workspace_parent_capability = Dir::open_ambient_dir(parent_path, ambient_authority())
+        .map_err(|error| format!("Could not open selected workspace parent: {error}"))?;
+    workspace_parent_capability
+        .create_dir(Path::new(&workspace_name))
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                format!(
+                    "Workspace already exists at {}; it will not be overwritten",
+                    preview.path.display()
+                )
+            } else {
+                format!(
+                    "Could not reserve workspace {}: {error}",
+                    preview.path.display()
+                )
+            }
+        })?;
+    // Acquire the exclusive child through its retained parent without following a symlink or
+    // reparse point, then bind the entry to this open handle.
+    let workspace_capability = open_prepared_directory(
+        &workspace_parent_capability,
+        &workspace_name,
+        "new workspace",
+    )?;
 
-    let hecate_dir = preview.path.join(".hecate");
-    fs::create_dir(&hecate_dir).map_err(|error| {
-        format!(
-            "Workspace was reserved at {}, but metadata directory creation failed: {error}",
-            preview.path.display()
-        )
-    })?;
-    let disabled_hooks = hecate_dir.join("hooks-disabled");
-    fs::create_dir(&disabled_hooks).map_err(|error| {
+    workspace_capability
+        .create_dir(".hecate")
+        .map_err(|error| {
+            format!(
+                "Workspace was reserved at {}, but metadata directory creation failed: {error}",
+                preview.path.display()
+            )
+        })?;
+    let metadata_capability = open_prepared_directory(
+        &workspace_capability,
+        OsStr::new(".hecate"),
+        "workspace metadata",
+    )?;
+    metadata_capability.create_dir("hooks-disabled").map_err(|error| {
         format!(
             "Workspace was reserved at {}, but Git hook isolation could not be prepared: {error}",
             preview.path.display()
         )
     })?;
+
+    ensure_preparation_bindings(
+        parent_path,
+        &workspace_parent_capability,
+        &workspace_name,
+        &workspace_capability,
+        &metadata_capability,
+        None,
+        "before Git clone",
+    )?;
     let clone = git_workspace_command(
         None,
-        &hecate_dir,
+        &preview.path.join(".hecate"),
         [
             "clone",
             "--single-branch",
@@ -186,10 +257,38 @@ fn create_workspace_from_source(
             preview.path.display()
         )
     })?;
+    ensure_preparation_bindings(
+        parent_path,
+        &workspace_parent_capability,
+        &workspace_name,
+        &workspace_capability,
+        &metadata_capability,
+        None,
+        "after Git clone",
+    )?;
 
+    let checkout_capability =
+        open_dir_child_nofollow(&workspace_capability, OsStr::new("repository"))
+            .map_err(|error| format!("Could not retain checkout capability: {error}"))?;
+    ensure_directory_entry_identity(
+        &workspace_capability,
+        OsStr::new("repository"),
+        &checkout_capability,
+        "new checkout",
+    )?;
+
+    ensure_preparation_bindings(
+        parent_path,
+        &workspace_parent_capability,
+        &workspace_name,
+        &workspace_capability,
+        &metadata_capability,
+        Some(&checkout_capability),
+        "before branch creation",
+    )?;
     let switch = git_workspace_command(
         Some(&preview.checkout_path),
-        &hecate_dir,
+        &preview.path.join(".hecate"),
         [
             "switch",
             "--create",
@@ -205,8 +304,35 @@ fn create_workspace_from_source(
     })?;
     ensure_success("create contribution branch", switch)
         .map_err(|error| format!("{error}; workspace remains at {}", preview.path.display()))?;
+    ensure_preparation_bindings(
+        parent_path,
+        &workspace_parent_capability,
+        &workspace_name,
+        &workspace_capability,
+        &metadata_capability,
+        Some(&checkout_capability),
+        "after branch creation",
+    )?;
 
+    ensure_preparation_bindings(
+        parent_path,
+        &workspace_parent_capability,
+        &workspace_name,
+        &workspace_capability,
+        &metadata_capability,
+        Some(&checkout_capability),
+        "before reading Git status",
+    )?;
     let commit = git_text(&preview.checkout_path, ["rev-parse", "HEAD"])?;
+    ensure_preparation_bindings(
+        parent_path,
+        &workspace_parent_capability,
+        &workspace_name,
+        &workspace_capability,
+        &metadata_capability,
+        Some(&checkout_capability),
+        "after reading Git commit",
+    )?;
     if !commit.eq_ignore_ascii_case(&repository.commit) {
         return Err(format!(
             "Prepared branch is at commit {commit}, not the analyzed repository commit {}; workspace remains at {}",
@@ -215,15 +341,38 @@ fn create_workspace_from_source(
         ));
     }
     let branch = git_text(&preview.checkout_path, ["branch", "--show-current"])?;
+    ensure_preparation_bindings(
+        parent_path,
+        &workspace_parent_capability,
+        &workspace_name,
+        &workspace_capability,
+        &metadata_capability,
+        Some(&checkout_capability),
+        "after reading Git branch",
+    )?;
     let git_status = git_text(&preview.checkout_path, ["status", "--short", "--branch"])?;
-    let plan_path = hecate_dir.join("plan-v1.json");
-    save_plan(&plan_path, plan)?;
-    if load_plan(&plan_path)? != *plan {
-        return Err(format!(
-            "Stored plan failed read-back validation; workspace remains at {}",
-            preview.path.display()
-        ));
-    }
+    ensure_preparation_bindings(
+        parent_path,
+        &workspace_parent_capability,
+        &workspace_name,
+        &workspace_capability,
+        &metadata_capability,
+        Some(&checkout_capability),
+        "after reading Git status",
+    )?;
+    let plan_path = preview.path.join(".hecate").join("plan-v1.json");
+    let expected_plan_bytes = encode_plan(plan)?;
+    write_child_new(
+        &metadata_capability,
+        OsStr::new("plan-v1.json"),
+        &expected_plan_bytes,
+    )?;
+    verify_child_bytes(
+        &metadata_capability,
+        OsStr::new("plan-v1.json"),
+        &expected_plan_bytes,
+        MAX_PLAN_METADATA_BYTES as usize,
+    )?;
     let prepared_at_unix_seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|error| format!("System clock error while recording workspace: {error}"))?
@@ -240,12 +389,51 @@ fn create_workspace_from_source(
         plan_path: ".hecate/plan-v1.json".to_string(),
         initial_git_status: git_status.clone(),
     };
-    write_json_new(&hecate_dir.join("workspace-v1.json"), &manifest).map_err(|error| {
+    let expected_manifest_bytes = serde_json::to_vec_pretty(&manifest)
+        .map_err(|error| format!("Could not serialize workspace manifest: {error}"))?;
+    write_child_new(
+        &metadata_capability,
+        OsStr::new("workspace-v1.json"),
+        &expected_manifest_bytes,
+    )
+    .map_err(|error| {
         format!(
             "Workspace is ready at {}, but its audit manifest could not be written: {error}",
             preview.path.display()
         )
     })?;
+
+    verify_child_bytes(
+        &metadata_capability,
+        OsStr::new("workspace-v1.json"),
+        &expected_manifest_bytes,
+        64 * 1024,
+    )?;
+    verify_child_bytes(
+        &metadata_capability,
+        OsStr::new("plan-v1.json"),
+        &expected_plan_bytes,
+        MAX_PLAN_METADATA_BYTES as usize,
+    )?;
+    ensure_workspace_path_binding(parent_path, &workspace_parent_capability)?;
+    ensure_directory_entry_identity(
+        &workspace_parent_capability,
+        &workspace_name,
+        &workspace_capability,
+        "workspace before identity issuance",
+    )?;
+    ensure_directory_entry_identity(
+        &workspace_capability,
+        OsStr::new("repository"),
+        &checkout_capability,
+        "checkout before identity issuance",
+    )?;
+    ensure_directory_entry_identity(
+        &workspace_capability,
+        OsStr::new(".hecate"),
+        &metadata_capability,
+        "metadata before identity issuance",
+    )?;
 
     Ok(WorkspaceResult {
         path: preview.path.clone(),
@@ -254,6 +442,13 @@ fn create_workspace_from_source(
         branch,
         commit,
         git_status,
+        workspace_capability,
+        workspace_parent_capability,
+        workspace_name,
+        metadata_capability,
+        checkout_capability,
+        manifest_sha256: metadata_sha256(&expected_manifest_bytes),
+        plan_sha256: metadata_sha256(&expected_plan_bytes),
     })
 }
 
@@ -277,12 +472,17 @@ pub(crate) fn create_workspace_from_source_for_tests(
 }
 
 pub fn save_plan(path: &Path, plan: &ContributionPlan) -> Result<(), String> {
+    write_json_bytes_new(path, &encode_plan(plan)?)
+}
+
+fn encode_plan(plan: &ContributionPlan) -> Result<Vec<u8>, String> {
     validate_plan(plan)?;
     let stored = StoredContributionPlan {
         schema_version: PLAN_SCHEMA_VERSION,
         plan: plan.clone(),
     };
-    write_json_new(path, &stored)
+    serde_json::to_vec_pretty(&stored)
+        .map_err(|error| format!("Could not serialize contribution plan: {error}"))
 }
 
 pub fn load_plan(path: &Path) -> Result<ContributionPlan, String> {
@@ -398,6 +598,354 @@ pub fn validate_prepared_workspace(
     Ok(checkout)
 }
 
+/// Validate metadata through the exact capabilities retained by workspace preparation. The
+/// checkout entry is opened relative to the held workspace handle and compared with the held
+/// checkout handle; no path lookup is used to re-establish either identity.
+pub(crate) fn validate_prepared_workspace_capabilities(
+    workspace_parent_capability: &Dir,
+    workspace_name: &OsStr,
+    workspace_capability: &Dir,
+    metadata_capability: &Dir,
+    checkout_capability: &Dir,
+    expected_manifest_sha256: &str,
+    expected_plan_sha256: &str,
+    repository_url: &str,
+    issue_number: u64,
+    plan_artifact_id: &str,
+) -> Result<(), String> {
+    ensure_directory_entry_identity(
+        workspace_parent_capability,
+        workspace_name,
+        workspace_capability,
+        "prepared workspace",
+    )?;
+    ensure_directory_entry_identity(
+        workspace_capability,
+        OsStr::new(".hecate"),
+        metadata_capability,
+        "prepared metadata",
+    )?;
+    let metadata_dir = metadata_capability;
+    let manifest_bytes =
+        read_child_file_nofollow(&metadata_dir, OsStr::new("workspace-v1.json"), 64 * 1024)?;
+    let manifest: WorkspaceManifest = serde_json::from_slice(&manifest_bytes)
+        .map_err(|_| "Could not decode prepared workspace manifest".to_string())?;
+    if metadata_sha256(&manifest_bytes) != expected_manifest_sha256 {
+        return Err("Prepared workspace manifest changed after workspace creation".into());
+    }
+    if manifest.schema_version != WORKSPACE_SCHEMA_VERSION
+        || manifest.checkout_path != "repository"
+        || manifest.plan_path != ".hecate/plan-v1.json"
+        || manifest.issue_number != issue_number
+        || manifest.plan_path != plan_artifact_id
+    {
+        return Err(
+            "Workspace manifest does not match the approved issue and plan reference".into(),
+        );
+    }
+    let (expected_owner, expected_name) = GitHubClient::parse_repository(repository_url)?;
+    let (manifest_owner, manifest_name) = GitHubClient::parse_repository(&manifest.repository_url)?;
+    if !expected_owner.eq_ignore_ascii_case(&manifest_owner)
+        || !expected_name.eq_ignore_ascii_case(&manifest_name)
+    {
+        return Err("Workspace manifest belongs to a different GitHub repository".into());
+    }
+    let checkout_entry = open_dir_child_nofollow(workspace_capability, OsStr::new("repository"))
+        .map_err(|_| "Prepared checkout entry is missing or unsafe".to_string())?;
+    if !same_directory_object(&checkout_entry, checkout_capability)? {
+        return Err("Prepared checkout capability does not match its workspace entry".into());
+    }
+    let plan_bytes = read_child_file_nofollow(
+        &metadata_dir,
+        OsStr::new("plan-v1.json"),
+        MAX_PLAN_METADATA_BYTES as usize,
+    )?;
+    let plan = decode_plan(&plan_bytes)?;
+    if metadata_sha256(&plan_bytes) != expected_plan_sha256 {
+        return Err("Approved contribution plan changed after workspace creation".into());
+    }
+    if plan.issue_number != issue_number {
+        return Err("Stored contribution plan does not match the selected issue".into());
+    }
+    let (plan_owner, plan_name) = GitHubClient::parse_repository(&plan.repository_url)?;
+    if !expected_owner.eq_ignore_ascii_case(&plan_owner)
+        || !expected_name.eq_ignore_ascii_case(&plan_name)
+    {
+        return Err("Stored contribution plan belongs to a different repository".into());
+    }
+    Ok(())
+}
+
+fn ensure_workspace_path_binding(path: &Path, expected_parent: &Dir) -> Result<(), String> {
+    let observed = Dir::open_ambient_dir(path, ambient_authority())
+        .map_err(|_| "Selected workspace parent path is no longer available".to_string())?;
+    if !same_directory_object(&observed, expected_parent)? {
+        return Err("Selected workspace parent path changed during preparation".into());
+    }
+    Ok(())
+}
+
+fn ensure_preparation_bindings(
+    parent_path: &Path,
+    parent: &Dir,
+    workspace_name: &OsStr,
+    workspace: &Dir,
+    metadata: &Dir,
+    checkout: Option<&Dir>,
+    stage: &str,
+) -> Result<(), String> {
+    ensure_workspace_path_binding(parent_path, parent)?;
+    ensure_directory_entry_identity(
+        parent,
+        workspace_name,
+        workspace,
+        &format!("workspace {stage}"),
+    )?;
+    ensure_directory_entry_identity(
+        workspace,
+        OsStr::new(".hecate"),
+        metadata,
+        &format!("metadata {stage}"),
+    )?;
+    if let Some(checkout) = checkout {
+        ensure_directory_entry_identity(
+            workspace,
+            OsStr::new("repository"),
+            checkout,
+            &format!("checkout {stage}"),
+        )?;
+    }
+    Ok(())
+}
+
+fn ensure_directory_entry_identity(
+    parent: &Dir,
+    name: &OsStr,
+    expected: &Dir,
+    label: &str,
+) -> Result<(), String> {
+    let observed = open_dir_child_nofollow(parent, name)
+        .map_err(|_| format!("{label} entry is missing or unsafe"))?;
+    if !same_directory_object(&observed, expected)? {
+        return Err(format!(
+            "{label} entry no longer identifies its retained directory"
+        ));
+    }
+    Ok(())
+}
+
+fn open_prepared_directory(parent: &Dir, name: &OsStr, label: &str) -> Result<Dir, String> {
+    let directory = open_dir_child_nofollow(parent, name)
+        .map_err(|_| format!("Could not safely open {label} directory"))?;
+    ensure_directory_entry_identity(parent, name, &directory, label)?;
+    Ok(directory)
+}
+
+fn write_child_new(parent: &Dir, name: &OsStr, bytes: &[u8]) -> Result<(), String> {
+    let mut options = CapOpenOptions::new();
+    options.write(true).create_new(true);
+    let mut file = parent
+        .open_with(Path::new(name), &options)
+        .map_err(|error| format!("Could not create HECATE metadata file exclusively: {error}"))?;
+    file.write_all(bytes)
+        .map_err(|error| format!("Could not write HECATE metadata through its capability: {error}"))
+}
+
+fn verify_child_bytes(
+    parent: &Dir,
+    name: &OsStr,
+    expected: &[u8],
+    limit: usize,
+) -> Result<(), String> {
+    let actual = read_child_file_nofollow(parent, name, limit)?;
+    if actual != expected {
+        return Err("Prepared metadata differs from its in-memory expected bytes".into());
+    }
+    Ok(())
+}
+
+fn metadata_sha256(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+/// Open a single directory component without following a symlink or reparse point.
+pub(crate) fn open_dir_child_nofollow(parent: &Dir, name: &OsStr) -> std::io::Result<Dir> {
+    let mut options = CapOpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options
+        .custom_flags((rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::DIRECTORY).bits() as i32);
+    #[cfg(windows)]
+    {
+        options
+            .custom_flags(
+                windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT
+                    | windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS,
+            )
+            .share_mode(
+                windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ
+                    | windows_sys::Win32::Storage::FileSystem::FILE_SHARE_WRITE,
+            );
+    }
+    #[cfg(not(any(unix, windows)))]
+    return Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "No no-follow directory open is available on this platform",
+    ));
+
+    let file = parent.open_with(Path::new(name), &options)?.into_std();
+    let metadata = file.metadata()?;
+    if !metadata.is_dir() || is_reparse_file(&metadata) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "Directory component is not a regular directory",
+        ));
+    }
+    Ok(Dir::from_std_file(file))
+}
+
+/// Open a single regular file component without following symlinks/reparse points.
+pub(crate) fn open_file_child_nofollow(
+    parent: &Dir,
+    name: &OsStr,
+) -> std::io::Result<std::fs::File> {
+    let mut options = CapOpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
+    #[cfg(windows)]
+    options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
+    #[cfg(not(any(unix, windows)))]
+    return Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "No no-follow file open is available on this platform",
+    ));
+
+    let file = parent.open_with(Path::new(name), &options)?.into_std();
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || is_reparse_file(&metadata) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "File component is not a regular non-reparse file",
+        ));
+    }
+    Ok(file)
+}
+
+pub(crate) fn read_child_file_nofollow(
+    parent: &Dir,
+    name: &OsStr,
+    limit: usize,
+) -> Result<Vec<u8>, String> {
+    let mut file = open_file_child_nofollow(parent, name)
+        .map_err(|_| "Could not safely open workspace metadata file".to_string())?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| "Could not inspect workspace metadata handle".to_string())?;
+    if metadata.len() > limit as u64 {
+        return Err(format!("Workspace metadata exceeds the {limit}-byte limit"));
+    }
+    let mut bytes = Vec::with_capacity(metadata.len().min(limit as u64) as usize);
+    Read::by_ref(&mut file)
+        .take(limit as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "Could not read workspace metadata handle".to_string())?;
+    if bytes.len() > limit {
+        return Err(format!("Workspace metadata exceeds the {limit}-byte limit"));
+    }
+    Ok(bytes)
+}
+
+fn same_directory_object(left: &Dir, right: &Dir) -> Result<bool, String> {
+    let left = left
+        .try_clone()
+        .map(Dir::into_std_file)
+        .map_err(|_| "Could not inspect prepared directory handle".to_string())?;
+    let right = right
+        .try_clone()
+        .map(Dir::into_std_file)
+        .map_err(|_| "Could not inspect prepared directory handle".to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let left = left
+            .metadata()
+            .map_err(|_| "Could not inspect prepared directory handle".to_string())?;
+        let right = right
+            .metadata()
+            .map_err(|_| "Could not inspect prepared directory handle".to_string())?;
+        Ok(left.dev() == right.dev() && left.ino() == right.ino())
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::HANDLE;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx,
+        };
+        let mut left_info = std::mem::MaybeUninit::<FILE_ID_INFO>::uninit();
+        let mut right_info = std::mem::MaybeUninit::<FILE_ID_INFO>::uninit();
+        let left_ok = unsafe {
+            GetFileInformationByHandleEx(
+                left.as_raw_handle() as HANDLE,
+                FileIdInfo,
+                left_info.as_mut_ptr().cast(),
+                std::mem::size_of::<FILE_ID_INFO>() as u32,
+            )
+        };
+        let right_ok = unsafe {
+            GetFileInformationByHandleEx(
+                right.as_raw_handle() as HANDLE,
+                FileIdInfo,
+                right_info.as_mut_ptr().cast(),
+                std::mem::size_of::<FILE_ID_INFO>() as u32,
+            )
+        };
+        if left_ok == 0 || right_ok == 0 {
+            return Err("Could not determine prepared directory handle identity".into());
+        }
+        let left_info = unsafe { left_info.assume_init() };
+        let right_info = unsafe { right_info.assume_init() };
+        windows_file_ids_match(
+            left_info.VolumeSerialNumber,
+            left_info.FileId.Identifier,
+            right_info.VolumeSerialNumber,
+            right_info.FileId.Identifier,
+        )
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (left, right);
+        Err("Stable directory identity is unavailable on this platform".into())
+    }
+}
+
+#[cfg(windows)]
+fn windows_file_ids_match(
+    left_volume: u64,
+    left_id: [u8; 16],
+    right_volume: u64,
+    right_id: [u8; 16],
+) -> Result<bool, String> {
+    if left_volume == 0 || right_volume == 0 || left_id == [0; 16] || right_id == [0; 16] {
+        return Err("Filesystem did not provide a usable prepared directory identity".into());
+    }
+    Ok(left_volume == right_volume && left_id == right_id)
+}
+
+#[cfg(windows)]
+fn is_reparse_file(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    metadata.file_attributes()
+        & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+        != 0
+}
+
+#[cfg(not(windows))]
+fn is_reparse_file(metadata: &std::fs::Metadata) -> bool {
+    metadata.file_type().is_symlink()
+}
+
 fn read_workspace_metadata(root: &Dir, relative: &str, limit: usize) -> Result<Vec<u8>, String> {
     let metadata = root
         .symlink_metadata(relative)
@@ -421,6 +969,10 @@ fn read_workspace_metadata(root: &Dir, relative: &str, limit: usize) -> Result<V
 fn write_json_new<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(value)
         .map_err(|error| format!("Could not serialize HECATE metadata: {error}"))?;
+    write_json_bytes_new(path, &bytes)
+}
+
+fn write_json_bytes_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -699,7 +1251,226 @@ mod tests {
         );
         assert_eq!(load_plan(&result.plan_path).unwrap(), plan);
         assert!(result.path.join(".hecate/workspace-v1.json").is_file());
+        assert_eq!(
+            fs::read(&result.plan_path).unwrap(),
+            encode_plan(&plan).unwrap()
+        );
+        let manifest_on_disk = fs::read(result.path.join(".hecate/workspace-v1.json")).unwrap();
+        assert_eq!(metadata_sha256(&manifest_on_disk), result.manifest_sha256);
+        assert_eq!(
+            metadata_sha256(&fs::read(&result.plan_path).unwrap()),
+            result.plan_sha256
+        );
+        drop(result);
         let _ = fs::remove_dir_all(source);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn directory_identity_uses_the_retained_handles() {
+        let root = test_root();
+        fs::create_dir_all(root.join("left")).unwrap();
+        fs::create_dir_all(root.join("right")).unwrap();
+        let left = Dir::open_ambient_dir(&root.join("left"), ambient_authority()).unwrap();
+        let right = Dir::open_ambient_dir(&root.join("right"), ambient_authority()).unwrap();
+        assert!(same_directory_object(&left, &left).unwrap());
+        assert!(!same_directory_object(&left, &right).unwrap());
+        drop((left, right));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_unavailable_windows_file_identity_values() {
+        let nonzero = [1u8; 16];
+        assert!(windows_file_ids_match(1, nonzero, 1, nonzero).unwrap());
+        assert!(!windows_file_ids_match(1, nonzero, 1, [2u8; 16]).unwrap());
+        assert!(windows_file_ids_match(0, nonzero, 0, nonzero).is_err());
+        assert!(windows_file_ids_match(1, [0; 16], 1, [0; 16]).is_err());
+    }
+
+    #[test]
+    fn expected_metadata_bytes_are_authoritative_and_substitutions_fail() {
+        let root = test_root();
+        fs::create_dir_all(&root).unwrap();
+        let metadata = root.join("metadata");
+        fs::create_dir(&metadata).unwrap();
+        let metadata_cap = Dir::open_ambient_dir(&metadata, ambient_authority()).unwrap();
+        let expected = b"expected approved plan bytes";
+        write_child_new(&metadata_cap, OsStr::new("plan.json"), expected).unwrap();
+        verify_child_bytes(&metadata_cap, OsStr::new("plan.json"), expected, 1024).unwrap();
+        fs::write(metadata.join("plan.json"), b"substituted plan bytes").unwrap();
+        assert!(
+            verify_child_bytes(&metadata_cap, OsStr::new("plan.json"), expected, 1024).is_err()
+        );
+        assert_ne!(
+            metadata_sha256(expected),
+            metadata_sha256(b"substituted plan bytes")
+        );
+
+        fs::write(metadata.join("manifest.json"), b"attacker pre-created file").unwrap();
+        assert!(
+            write_child_new(
+                &metadata_cap,
+                OsStr::new("manifest.json"),
+                b"expected manifest"
+            )
+            .is_err()
+        );
+        drop(metadata_cap);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlink_substitution_between_workspace_create_and_open() {
+        use std::os::unix::fs::symlink;
+        let root = test_root();
+        fs::create_dir_all(&root).unwrap();
+        let parent = Dir::open_ambient_dir(&root, ambient_authority()).unwrap();
+        parent.create_dir("issue").unwrap();
+        let target = root.join("outside");
+        fs::create_dir(&target).unwrap();
+        fs::rename(root.join("issue"), root.join("created-issue")).unwrap();
+        symlink(&target, root.join("issue")).unwrap();
+
+        assert!(open_prepared_directory(&parent, OsStr::new("issue"), "workspace").is_err());
+        assert!(
+            fs::symlink_metadata(root.join("issue"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(target.is_dir());
+        drop(parent);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn detects_workspace_entry_replacement_without_deleting_the_replacement() {
+        let root = test_root();
+        fs::create_dir_all(&root).unwrap();
+        let parent = Dir::open_ambient_dir(&root, ambient_authority()).unwrap();
+        parent.create_dir("issue").unwrap();
+        let workspace = open_prepared_directory(&parent, OsStr::new("issue"), "workspace").unwrap();
+        fs::rename(root.join("issue"), root.join("original")).unwrap();
+        fs::create_dir(root.join("issue")).unwrap();
+        fs::write(root.join("issue/attacker-data"), b"preserve me").unwrap();
+        assert!(
+            ensure_directory_entry_identity(
+                &parent,
+                OsStr::new("issue"),
+                &workspace,
+                "workspace at final issuance",
+            )
+            .is_err()
+        );
+        assert_eq!(
+            fs::read(root.join("issue/attacker-data")).unwrap(),
+            b"preserve me"
+        );
+        drop((workspace, parent));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lifecycle_checks_reject_checkout_and_metadata_entry_substitution() {
+        let root = test_root();
+        fs::create_dir_all(root.join("workspace/repository")).unwrap();
+        fs::create_dir(root.join("workspace/.hecate")).unwrap();
+        let parent = Dir::open_ambient_dir(&root, ambient_authority()).unwrap();
+        let workspace =
+            open_prepared_directory(&parent, OsStr::new("workspace"), "workspace").unwrap();
+        let checkout =
+            open_prepared_directory(&workspace, OsStr::new("repository"), "checkout").unwrap();
+        let metadata =
+            open_prepared_directory(&workspace, OsStr::new(".hecate"), "metadata").unwrap();
+
+        fs::rename(
+            root.join("workspace/repository"),
+            root.join("workspace/repository-original"),
+        )
+        .unwrap();
+        fs::create_dir(root.join("workspace/repository")).unwrap();
+        fs::write(
+            root.join("workspace/repository/replacement-marker"),
+            b"preserve",
+        )
+        .unwrap();
+        assert!(
+            ensure_directory_entry_identity(
+                &workspace,
+                OsStr::new("repository"),
+                &checkout,
+                "checkout before issuance",
+            )
+            .is_err()
+        );
+
+        fs::rename(
+            root.join("workspace/.hecate"),
+            root.join("workspace/metadata-original"),
+        )
+        .unwrap();
+        fs::create_dir(root.join("workspace/.hecate")).unwrap();
+        fs::write(
+            root.join("workspace/.hecate/replacement-marker"),
+            b"preserve",
+        )
+        .unwrap();
+        assert!(
+            ensure_directory_entry_identity(
+                &workspace,
+                OsStr::new(".hecate"),
+                &metadata,
+                "metadata before issuance",
+            )
+            .is_err()
+        );
+        assert_eq!(
+            fs::read(root.join("workspace/repository/replacement-marker")).unwrap(),
+            b"preserve"
+        );
+        assert_eq!(
+            fs::read(root.join("workspace/.hecate/replacement-marker")).unwrap(),
+            b"preserve"
+        );
+
+        drop((metadata, checkout, workspace, parent));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_junction_substitution_between_workspace_create_and_open() {
+        let root = test_root();
+        fs::create_dir_all(&root).unwrap();
+        let parent = Dir::open_ambient_dir(&root, ambient_authority()).unwrap();
+        parent.create_dir("issue").unwrap();
+        let target = root.join("outside");
+        fs::create_dir(&target).unwrap();
+        fs::remove_dir(root.join("issue")).unwrap();
+        let output = Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "$ErrorActionPreference='Stop'; New-Item -ItemType Junction -Path $env:HECATE_TEST_JUNCTION -Target $env:HECATE_TEST_JUNCTION_TARGET | Out-Null",
+            ])
+            .env("HECATE_TEST_JUNCTION", root.join("issue"))
+            .env("HECATE_TEST_JUNCTION_TARGET", &target)
+            .output()
+            .expect("junction creator must start");
+        assert!(
+            output.status.success(),
+            "junction setup failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(open_prepared_directory(&parent, OsStr::new("issue"), "workspace").is_err());
+        assert!(root.join("issue").exists());
+        drop(parent);
         let _ = fs::remove_dir_all(root);
     }
 
