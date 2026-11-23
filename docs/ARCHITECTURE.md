@@ -16,6 +16,8 @@ HECATE is a modular Rust CLI application. Deterministic repository access and an
 | `src/workspace.rs` | Requires approval to create a dedicated clone/issue branch, stores versioned plan and manifest metadata, and revalidates prepared workspaces. |
 | `src/agent/` | Provider-independent request/response types, mock and OpenAI-compatible providers, runtime loop, session state, tool definitions/registry/policies, and prepared-workspace readers. |
 | `src/agent/patch.rs`, `src/agent/patch_validation.rs` | Untrusted typed replace/create proposals and read-only validation against prepared workspace identity; calculates results and preview in memory without applying changes. |
+| `src/agent/patch_approval.rs` | Interactive, full-hash confirmation and private, non-serializable, one-use `ApprovedPatch` bound to the validated patch and retained workspace context. |
+| `src/agent/patch_application.rs` | Internal controlled application API that consumes `ApprovedPatch`, stages results and backups, verifies them, applies per-file changes, verifies outputs, and attempts reverse-order rollback with structured recovery reporting. It is not an agent tool or CLI workflow. |
 
 The current analysis is Rust-focused. Repository inventory recognizes several language extensions, but module, import, symbol, dependency, architecture, findings, and test-gap analysis is implemented around Rust. Other languages can be inventoried and searched as text by repository tools.
 
@@ -52,10 +54,13 @@ The agent subsystem is currently a library-like internal module in the binary, n
 
 `MockProvider` supports deterministic tests; `OpenAiCompatibleProvider` translates Chat Completions requests and responses behind the same provider interface. The six registered repository tools are read-only and validate the workspace manifest and stored plan before access. See [AGENT_RUNTIME.md](AGENT_RUNTIME.md), [PROVIDERS.md](PROVIDERS.md), and [SECURITY.md](SECURITY.md).
 
+Patch handling is a separate, internal workflow: an untrusted `PatchProposal` is fully validated into a private `ValidatedPatch`; interactive full-hash confirmation produces a non-serializable `ApprovedPatch`; the application layer consumes it by value, stages and verifies results/backups, applies each file operation, then verifies results or reports rollback/recovery. No model tool can invoke this application API, and the CLI does not yet orchestrate it.
+
 ## Current boundaries
 
 - No agent CLI command, MCP support, or persistent session store. The configurable provider targets the OpenAI-compatible Chat Completions protocol; other API protocols are not implemented.
-- No file-writing/patch tool, arbitrary command tool, repository-code execution, or validation runner.
+- No arbitrary file-writing tool, patch-generation tool, arbitrary command tool, repository-code execution, or validation runner. The internal patch application module can write only the exact operations in a consumed human-approved `ApprovedPatch`; it is not available to the model or CLI yet.
+- A patch's files are staged and verified before the first target change. Each individual replacement/creation uses a platform-specific operation, but the group is not atomic. Failure triggers guarded reverse-order rollback; failed or unsafe recovery preserves artifacts and is reported. Process termination or machine/power failure can leave partial changes.
 - Discovery and test-gap results are heuristic leads, not confirmation of a defect or absent coverage.
 - A Git clone is workspace isolation from the user's original checkout, not an operating-system security sandbox.
 - Preparation and Git use path-based operations. Lifecycle identity checks detect many substitutions but cannot prevent every concurrent path replacement. A malicious same-user process with write access to the selected workspace parent is outside the bounded local-CLI threat model. Capability-relative patch validation protects reads only after capabilities have been established; it does not secure preparation retroactively. Windows ordinal path comparison is not universal filesystem equivalence.

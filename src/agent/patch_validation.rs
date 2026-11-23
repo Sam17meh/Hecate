@@ -123,6 +123,74 @@ impl PatchValidator {
         })
     }
 
+    pub(crate) fn try_clone(&self) -> Result<Self, PatchValidationError> {
+        let clone_dir = |directory: &Dir, label: &str| {
+            directory.try_clone().map_err(|_| {
+                PatchValidationError::Workspace(format!("Could not retain {label} capability"))
+            })
+        };
+        Ok(Self {
+            workspace_parent: clone_dir(&self.workspace_parent, "workspace parent")?,
+            workspace_name: self.workspace_name.clone(),
+            workspace: clone_dir(&self.workspace, "workspace")?,
+            metadata: clone_dir(&self.metadata, "metadata")?,
+            checkout: clone_dir(&self.checkout, "checkout")?,
+            manifest_sha256: self.manifest_sha256.clone(),
+            plan_sha256: self.plan_sha256.clone(),
+            workspace_binding: self.workspace_binding.clone(),
+            context: self.context.clone(),
+        })
+    }
+
+    pub(crate) fn open_patch_parent(
+        &self,
+        path: &str,
+    ) -> Result<(Dir, OsString, String), PatchValidationError> {
+        let (relative, display) = checked_path(path)?;
+        let (parent, leaf) = open_parent_directory(&self.checkout, &relative, &display)?;
+        Ok((parent, leaf, display))
+    }
+
+    pub(crate) fn validate_patch_context(
+        &self,
+        patch: &ValidatedPatch,
+    ) -> Result<(), PatchValidationError> {
+        if patch.workspace != self.workspace_binding {
+            return Err(PatchValidationError::Workspace(
+                "Validated patch belongs to a different prepared workspace".into(),
+            ));
+        }
+        for change in patch.changes() {
+            checked_path(change.path())?;
+            if sha256(change.resulting_content().as_bytes()) != change.resulting_sha256() {
+                return Err(PatchValidationError::InvalidProposal(format!(
+                    "Result hash for `{}` does not match its content",
+                    change.path()
+                )));
+            }
+            if let Some(original) = change.original_content() {
+                if Some(sha256(original.as_bytes()).as_str()) != change.original_sha256() {
+                    return Err(PatchValidationError::InvalidProposal(format!(
+                        "Original snapshot hash for `{}` does not match its content",
+                        change.path()
+                    )));
+                }
+                if change.original_file_identity().is_none() {
+                    return Err(PatchValidationError::InvalidProposal(format!(
+                        "Replacement `{}` has no original file identity",
+                        change.path()
+                    )));
+                }
+            } else if !change.is_new_file() {
+                return Err(PatchValidationError::InvalidProposal(format!(
+                    "Replacement `{}` has no original snapshot",
+                    change.path()
+                )));
+            }
+        }
+        self.revalidate_patch_snapshot(patch)
+    }
+
     /// Validate every operation atomically and calculate results without writing to disk.
     pub fn validate(
         &self,
@@ -169,15 +237,20 @@ impl PatchValidator {
             }
             let (parent_dir, leaf) = open_parent_directory(&self.checkout, &relative, &display)?;
 
-            let (operation, original_content, resulting_content, hash_input) = match &file_patch
-                .operation
-            {
+            let (
+                operation,
+                original_content,
+                original_file_identity,
+                resulting_content,
+                hash_input,
+            ) = match &file_patch.operation {
                 PatchOperation::Replace {
                     expected_original_sha256,
                     edits,
                 } => {
                     validate_sha256(expected_original_sha256, &display)?;
-                    let original = read_existing_text(&parent_dir, &leaf, &display)?;
+                    let (original, original_identity) =
+                        read_existing_text_with_identity(&parent_dir, &leaf, &display)?;
                     if original.len() > MAX_FILE_BYTES {
                         return Err(limit_error(&format!(
                             "Original file `{display}` exceeds the 1 MiB file limit"
@@ -219,6 +292,7 @@ impl PatchValidator {
                     let input = HashFile::Replace {
                         path: display.clone(),
                         original_sha256: actual_hash.clone(),
+                        original_file_identity: original_identity.clone(),
                         edits: edits.clone(),
                         resulting_sha256: sha256(content.as_bytes()),
                     };
@@ -228,6 +302,7 @@ impl PatchValidator {
                             edits: edits.len(),
                         },
                         Some(original_content),
+                        Some(original_identity),
                         content,
                         input,
                     )
@@ -265,6 +340,7 @@ impl PatchValidator {
                     (
                         ValidatedOperation::Create,
                         None,
+                        None,
                         content.clone(),
                         HashFile::Create {
                             path: display.clone(),
@@ -286,6 +362,7 @@ impl PatchValidator {
                 path: display,
                 operation,
                 original_content,
+                original_file_identity,
                 resulting_content,
                 resulting_sha256,
             });
@@ -335,10 +412,16 @@ impl PatchValidator {
             let (relative, display) = checked_path(change.path())?;
             let (parent, leaf) = open_parent_directory(&self.checkout, &relative, &display)?;
             if let Some(expected_hash) = change.original_sha256() {
-                let actual = read_existing_text(&parent, &leaf, &display)?;
+                let (actual, actual_identity) =
+                    read_existing_text_with_identity(&parent, &leaf, &display)?;
                 if sha256(actual.as_bytes()) != expected_hash {
                     return Err(PatchValidationError::StaleFile(format!(
                         "Patch target `{display}` changed after validation"
+                    )));
+                }
+                if Some(actual_identity.as_str()) != change.original_file_identity() {
+                    return Err(PatchValidationError::StaleFile(format!(
+                        "Patch target `{display}` file identity changed after validation"
                     )));
                 }
             } else {
@@ -360,7 +443,7 @@ impl PatchValidator {
         self.revalidate_workspace()
     }
 
-    fn revalidate_workspace(&self) -> Result<(), PatchValidationError> {
+    pub(crate) fn revalidate_workspace(&self) -> Result<(), PatchValidationError> {
         let verified_metadata = workspace::validate_prepared_workspace_capabilities(
             &self.workspace_parent,
             &self.workspace_name,
@@ -499,11 +582,11 @@ fn open_parent_directory(
     ))
 }
 
-fn read_existing_text(
+fn read_existing_text_with_identity(
     parent: &Dir,
     leaf: &std::ffi::OsStr,
     display: &str,
-) -> Result<String, PatchValidationError> {
+) -> Result<(String, String), PatchValidationError> {
     let mut file = workspace::open_file_child_nofollow(parent, leaf).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             PatchValidationError::File(format!("Patch target `{display}` does not exist"))
@@ -521,6 +604,8 @@ fn read_existing_text(
             "Patch target `{display}` is linked or is not a regular file"
         )));
     }
+    let identity =
+        workspace::file_object_identity(&file).map_err(PatchValidationError::Workspace)?;
     let mut bytes = Vec::with_capacity(opened_metadata.len().min(MAX_FILE_BYTES as u64) as usize);
     file.by_ref()
         .take(MAX_FILE_BYTES as u64 + 1)
@@ -538,8 +623,10 @@ fn read_existing_text(
             "Patch target `{display}` is binary"
         )));
     }
-    String::from_utf8(bytes)
-        .map_err(|_| PatchValidationError::File(format!("Patch target `{display}` is not UTF-8")))
+    let content = String::from_utf8(bytes).map_err(|_| {
+        PatchValidationError::File(format!("Patch target `{display}` is not UTF-8"))
+    })?;
+    Ok((content, identity))
 }
 
 fn validate_edit(edit: &TextEdit, path: &str) -> Result<(), PatchValidationError> {
@@ -718,6 +805,7 @@ enum HashFile {
     Replace {
         path: String,
         original_sha256: String,
+        original_file_identity: String,
         edits: Vec<TextEdit>,
         resulting_sha256: String,
     },

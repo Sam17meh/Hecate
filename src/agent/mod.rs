@@ -6,6 +6,7 @@
 
 pub mod openai_compatible;
 pub mod patch;
+pub(crate) mod patch_application;
 pub mod patch_approval;
 pub mod patch_validation;
 pub mod provider;

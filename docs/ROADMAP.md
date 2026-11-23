@@ -19,21 +19,25 @@ This document describes the implementation at the current repository revision. P
 
 ## Milestone 4D.1 — Patch Proposal and Read-Only Validation (implemented)
 
-HECATE validates structured exact-replacement and new-file proposals against a prepared workspace, computes results and a deterministic SHA-256 identity in memory, and returns a preview. It does not approve or apply proposals.
+HECATE validates structured exact-replacement and new-file proposals against a prepared workspace, computes results and a deterministic SHA-256 identity in memory, and returns a preview. The 4D.2.1 approval foundation requires interactive full-hash confirmation and creates a private one-use approval value. The 4D.2.2 internal application API consumes that value, stages and verifies all results, applies per-file operations, verifies outcomes, and reports rollback or recovery requirements.
 
 This is a read-only validator under a bounded local-CLI threat model. Preparation and Git operations still use paths; checks before and after detect many substitutions but cannot prevent every concurrent replacement. A malicious same-user process with write access to the selected workspace parent is outside the current threat model. Capabilities confine validation reads after acquisition, not workspace preparation. This is not an OS sandbox, and Windows ordinal case-insensitive duplicate detection is not a universal filesystem-equivalence guarantee. See [SECURITY.md](SECURITY.md).
 
-The current CLI provides `inspect`, `discover`, `plan`, and `prepare`. The agent runtime and repository tools are not wired to an agent CLI command. MCP support, session persistence, write/patch tools, shell tools, code execution, and a repository test runner are not implemented.
+The current CLI provides `inspect`, `discover`, `plan`, and `prepare`. Neither patch approval nor application is wired to the CLI or agent runtime, and no model-driven patch generation exists. MCP support, session persistence, arbitrary write tools, shell tools, code execution, and a repository test runner are not implemented.
 
 ## Future work
 
-### Milestone 4D.2 — Interactive Human Approval (future)
+### Milestone 4D.2.1 — Approval Foundation (implemented)
 
-Add interactive CLI review of a validated proposal and explicit human approval tied to the exact proposal hash. Approval must not be inferred from a model response, session field, or provider result.
+Private in-memory approval records bind the exact validated patch and retained workspace, and require interactive full-hash confirmation. No CLI flow is present.
 
-### Milestone 4D.3 — Approved Patch Application (future)
+### Milestone 4D.2.2 — Controlled Patch Application (implemented, internal API)
 
-Apply only an explicitly approved, revalidated proposal inside the prepared workspace, then show the resulting diff. This is future work; the 4D.1 validator never writes files. No shell or repository-code execution is included.
+Consumes the approval once, stages and verifies result and backup files before target changes, performs per-file atomic replace/no-replace operations, verifies final contents, and attempts guarded reverse-order rollback. Multiple operations are not group-atomic. Process/machine interruption can require manual recovery. No shell, code execution, automated tests, commit, push, or PR is included.
+
+### Milestone 4D.2.3 — User-Facing Approval and Application Workflow (future)
+
+Add CLI orchestration that retains the prepared workspace context through validation, preview, approval, application, and reporting. Keep explicit terminal approval; do not introduce automatic approval or model-controlled application.
 
 ### Milestone 5 — Independent Review and Verification (future)
 

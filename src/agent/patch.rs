@@ -59,6 +59,7 @@ pub struct ValidatedFileChange {
     pub(crate) path: String,
     pub(crate) operation: ValidatedOperation,
     pub(crate) original_content: Option<String>,
+    pub(crate) original_file_identity: Option<String>,
     pub(crate) resulting_content: String,
     pub(crate) resulting_sha256: String,
 }
@@ -96,6 +97,10 @@ impl ValidatedFileChange {
             } => Some(original_sha256),
             ValidatedOperation::Create => None,
         }
+    }
+
+    pub(crate) fn original_file_identity(&self) -> Option<&str> {
+        self.original_file_identity.as_deref()
     }
 
     pub fn edit_count(&self) -> usize {

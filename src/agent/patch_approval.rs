@@ -14,6 +14,7 @@ pub(crate) struct ApprovedOperation {
     path: String,
     kind: ApprovedOperationKind,
     original_sha256: Option<String>,
+    original_file_identity: Option<String>,
     resulting_sha256: String,
 }
 
@@ -34,6 +35,10 @@ impl ApprovedOperation {
 
     pub(crate) fn original_sha256(&self) -> Option<&str> {
         self.original_sha256.as_deref()
+    }
+
+    pub(crate) fn original_file_identity(&self) -> Option<&str> {
+        self.original_file_identity.as_deref()
     }
 
     pub(crate) fn resulting_sha256(&self) -> &str {
@@ -77,10 +82,11 @@ impl ApprovalRecord {
 }
 
 /// A validated patch paired with the human decision that covers that exact patch and workspace.
-/// It is non-cloneable and non-serializable; it is not yet a filesystem application API.
+/// It is non-cloneable and non-serializable. The controlled application layer consumes it once.
 pub(crate) struct ApprovedPatch {
     patch: ValidatedPatch,
     record: ApprovalRecord,
+    validator: PatchValidator,
 }
 
 impl ApprovedPatch {
@@ -95,6 +101,10 @@ impl ApprovedPatch {
     /// Recheck the immutable approval binding before a later application stage consumes it.
     pub(crate) fn verify_binding(&self, candidate: &ValidatedPatch) -> Result<(), ApprovalError> {
         verify_record_binding(&self.record, candidate)
+    }
+
+    pub(crate) fn into_parts(self) -> (ValidatedPatch, ApprovalRecord, PatchValidator) {
+        (self.patch, self.record, self.validator)
     }
 }
 
@@ -153,7 +163,8 @@ pub(crate) fn approve_interactively(
     )
 }
 
-fn approve_with_io<R: BufRead, W: Write>(
+#[cfg(test)]
+pub(crate) fn approve_with_io<R: BufRead, W: Write>(
     patch: ValidatedPatch,
     validator: &PatchValidator,
     session_id: &str,
@@ -262,7 +273,14 @@ fn approve_with_confirmation<W: Write>(
         approved_at_unix_seconds,
     };
     verify_record_binding(&record, &patch)?;
-    Ok(ApprovedPatch { patch, record })
+    let retained_validator = validator
+        .try_clone()
+        .map_err(|error| ApprovalError::Input(error.to_string()))?;
+    Ok(ApprovedPatch {
+        patch,
+        record,
+        validator: retained_validator,
+    })
 }
 
 fn normalize_confirmation_line(mut line: String) -> Result<String, ApprovalError> {
@@ -476,6 +494,7 @@ fn approved_operations(patch: &ValidatedPatch) -> Vec<ApprovedOperation> {
                 }
             },
             original_sha256: change.original_sha256().map(str::to_string),
+            original_file_identity: change.original_file_identity().map(str::to_string),
             resulting_sha256: change.resulting_sha256().to_string(),
         })
         .collect()
@@ -488,7 +507,7 @@ fn map_snapshot_error(error: crate::agent::patch::PatchValidationError) -> Appro
     }
 }
 
-fn verify_record_binding(
+pub(crate) fn verify_record_binding(
     record: &ApprovalRecord,
     patch: &ValidatedPatch,
 ) -> Result<(), ApprovalError> {

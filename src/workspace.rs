@@ -986,6 +986,64 @@ pub(crate) fn directory_object_identity(directory: &Dir) -> Result<String, Strin
     }
 }
 
+/// Identify the exact opened regular file object without resolving its path again.
+pub(crate) fn file_object_identity(file: &std::fs::File) -> Result<String, String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = file
+            .metadata()
+            .map_err(|_| "Could not inspect opened file identity".to_string())?;
+        if !metadata.is_file() {
+            return Err("Opened object is not a regular file".into());
+        }
+        unix_file_identity(metadata.dev(), metadata.ino())
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::HANDLE;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx,
+        };
+        let metadata = file
+            .metadata()
+            .map_err(|_| "Could not inspect opened file identity".to_string())?;
+        if !metadata.is_file() || is_reparse_file(&metadata) {
+            return Err("Opened object is not a regular non-reparse file".into());
+        }
+        let mut info = std::mem::MaybeUninit::<FILE_ID_INFO>::uninit();
+        // SAFETY: `file` is an open handle and `info` has the API's expected layout.
+        if unsafe {
+            GetFileInformationByHandleEx(
+                file.as_raw_handle() as HANDLE,
+                FileIdInfo,
+                info.as_mut_ptr().cast(),
+                std::mem::size_of::<FILE_ID_INFO>() as u32,
+            )
+        } == 0
+        {
+            return Err("Could not determine opened file identity".into());
+        }
+        let info = unsafe { info.assume_init() };
+        if info.VolumeSerialNumber == 0 || info.FileId.Identifier == [0; 16] {
+            return Err("Filesystem did not provide usable opened file identity".into());
+        }
+        let id = info
+            .FileId
+            .Identifier
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        Ok(format!("windows:{}:{id}", info.VolumeSerialNumber))
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = file;
+        Err("Stable opened file identity is unavailable on this platform".into())
+    }
+}
+
 #[cfg(unix)]
 fn unix_file_identity(device: u64, inode: u64) -> Result<String, String> {
     if device == 0 || inode == 0 {
