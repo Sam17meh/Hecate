@@ -118,6 +118,21 @@ pub struct PatchSummary {
     pub preview: String,
 }
 
+/// In-process identity for the prepared workspace used to validate a patch.
+///
+/// This identifies the retained workspace and checkout objects and their preparation metadata;
+/// it is not a durable authentication token and cannot restore capabilities after restart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PatchWorkspaceBinding {
+    pub(crate) workspace_object_id: String,
+    pub(crate) checkout_object_id: String,
+    pub(crate) manifest_sha256: String,
+    pub(crate) plan_sha256: String,
+    pub(crate) repository_url: String,
+    pub(crate) checkout_commit: String,
+    pub(crate) branch: String,
+}
+
 /// Trusted result constructed only after every proposal operation validates successfully.
 /// This type is neither deserializable nor writable to a filesystem.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,6 +140,7 @@ pub struct ValidatedPatch {
     pub(crate) patch_sha256: String,
     pub(crate) changes: Vec<ValidatedFileChange>,
     pub(crate) summary: PatchSummary,
+    pub(crate) workspace: PatchWorkspaceBinding,
 }
 
 impl ValidatedPatch {

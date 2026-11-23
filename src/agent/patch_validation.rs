@@ -4,7 +4,8 @@
 
 use crate::agent::patch::{
     FilePatch, PATCH_PROPOSAL_SCHEMA_VERSION, PatchOperation, PatchProposal, PatchSummary,
-    PatchValidationError, TextEdit, ValidatedFileChange, ValidatedOperation, ValidatedPatch,
+    PatchValidationError, PatchWorkspaceBinding, TextEdit, ValidatedFileChange, ValidatedOperation,
+    ValidatedPatch,
 };
 use crate::agent::repository_tools;
 use crate::agent::session::{ContributionContext, PlanReviewStatus};
@@ -33,6 +34,7 @@ pub struct PatchValidator {
     checkout: Dir,
     manifest_sha256: String,
     plan_sha256: String,
+    workspace_binding: PatchWorkspaceBinding,
     context: ContributionContext,
 }
 
@@ -74,7 +76,7 @@ impl PatchValidator {
             manifest_sha256,
             plan_sha256,
         ) = prepared_workspace.validation_capabilities();
-        workspace::validate_prepared_workspace_capabilities(
+        let verified_metadata = workspace::validate_prepared_workspace_capabilities(
             workspace_parent_capability,
             workspace_name,
             workspace_capability,
@@ -87,6 +89,17 @@ impl PatchValidator {
             &context.plan.artifact_id,
         )
         .map_err(PatchValidationError::Workspace)?;
+        let workspace_binding = PatchWorkspaceBinding {
+            workspace_object_id: workspace::directory_object_identity(workspace_capability)
+                .map_err(PatchValidationError::Workspace)?,
+            checkout_object_id: workspace::directory_object_identity(checkout_capability)
+                .map_err(PatchValidationError::Workspace)?,
+            manifest_sha256: manifest_sha256.to_string(),
+            plan_sha256: plan_sha256.to_string(),
+            repository_url: context.repository_url.clone(),
+            checkout_commit: verified_metadata.checkout_commit,
+            branch: verified_metadata.branch,
+        };
         Ok(Self {
             workspace_parent: workspace_parent_capability.try_clone().map_err(|_| {
                 PatchValidationError::Workspace(
@@ -105,6 +118,7 @@ impl PatchValidator {
             })?,
             manifest_sha256: manifest_sha256.to_string(),
             plan_sha256: plan_sha256.to_string(),
+            workspace_binding,
             context: context.clone(),
         })
     }
@@ -114,19 +128,7 @@ impl PatchValidator {
         &self,
         proposal: &PatchProposal,
     ) -> Result<ValidatedPatch, PatchValidationError> {
-        workspace::validate_prepared_workspace_capabilities(
-            &self.workspace_parent,
-            &self.workspace_name,
-            &self.workspace,
-            &self.metadata,
-            &self.checkout,
-            &self.manifest_sha256,
-            &self.plan_sha256,
-            &self.context.repository_url,
-            self.context.issue_number,
-            &self.context.plan.artifact_id,
-        )
-        .map_err(PatchValidationError::Workspace)?;
+        self.revalidate_workspace()?;
         if proposal.schema_version != PATCH_PROPOSAL_SCHEMA_VERSION {
             return Err(PatchValidationError::InvalidProposal(format!(
                 "Unsupported patch proposal schema version {}",
@@ -312,7 +314,74 @@ impl PatchValidator {
             patch_sha256: sha256(&hash_bytes),
             changes,
             summary,
+            workspace: self.workspace_binding.clone(),
         })
+    }
+
+    /// Recheck that a validated patch still describes the current targets in this live workspace.
+    /// This is used immediately before and after interactive approval; it does not authorize writes.
+    #[allow(dead_code)] // Exercised by the approval foundation; CLI orchestration follows in 4D.2.3.
+    pub(crate) fn revalidate_patch_snapshot(
+        &self,
+        patch: &ValidatedPatch,
+    ) -> Result<(), PatchValidationError> {
+        if patch.workspace != self.workspace_binding {
+            return Err(PatchValidationError::Workspace(
+                "Validated patch belongs to a different prepared workspace".into(),
+            ));
+        }
+        self.revalidate_workspace()?;
+        for change in patch.changes() {
+            let (relative, display) = checked_path(change.path())?;
+            let (parent, leaf) = open_parent_directory(&self.checkout, &relative, &display)?;
+            if let Some(expected_hash) = change.original_sha256() {
+                let actual = read_existing_text(&parent, &leaf, &display)?;
+                if sha256(actual.as_bytes()) != expected_hash {
+                    return Err(PatchValidationError::StaleFile(format!(
+                        "Patch target `{display}` changed after validation"
+                    )));
+                }
+            } else {
+                match parent.symlink_metadata(&leaf) {
+                    Ok(_) => {
+                        return Err(PatchValidationError::StaleFile(format!(
+                            "Create destination `{display}` appeared after validation"
+                        )));
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(_) => {
+                        return Err(PatchValidationError::File(format!(
+                            "Could not safely inspect create destination `{display}`"
+                        )));
+                    }
+                }
+            }
+        }
+        self.revalidate_workspace()
+    }
+
+    fn revalidate_workspace(&self) -> Result<(), PatchValidationError> {
+        let verified_metadata = workspace::validate_prepared_workspace_capabilities(
+            &self.workspace_parent,
+            &self.workspace_name,
+            &self.workspace,
+            &self.metadata,
+            &self.checkout,
+            &self.manifest_sha256,
+            &self.plan_sha256,
+            &self.context.repository_url,
+            self.context.issue_number,
+            &self.context.plan.artifact_id,
+        )
+        .map_err(PatchValidationError::Workspace)?;
+        if verified_metadata.checkout_commit != self.workspace_binding.checkout_commit
+            || verified_metadata.branch != self.workspace_binding.branch
+        {
+            return Err(PatchValidationError::Workspace(
+                "Prepared checkout commit or branch changed after validation".into(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -523,31 +592,118 @@ fn estimate_size(file: &FilePatch) -> usize {
 fn make_preview(changes: &[ValidatedFileChange]) -> Result<String, PatchValidationError> {
     let mut preview = String::new();
     for change in changes {
-        let section = if change.is_new_file() {
-            format!(
-                "+++ {} (new file) +++\n{}",
-                change.path, change.resulting_content
-            )
+        let path = escape_terminal_text(&change.path)?;
+        if change.is_new_file() {
+            append_preview(&mut preview, "--- /dev/null\n")?;
+            append_preview(&mut preview, &format!("+++ b/{path}\n"))?;
+            let line_count = diff_line_count(&change.resulting_content);
+            if line_count > 0 {
+                append_preview(&mut preview, &format!("@@ -0,0 +1,{line_count} @@\n"))?;
+            }
+            append_diff_lines(&mut preview, '+', &change.resulting_content)?;
         } else {
-            format!(
-                "--- {} (original SHA-256: {})\n{}+++ {} (result SHA-256: {})\n{}",
-                change.path,
-                change.original_sha256().unwrap_or_default(),
-                change.original_content().unwrap_or_default(),
-                change.path,
-                change.resulting_sha256,
-                change.resulting_content
-            )
-        };
-        if preview.len().saturating_add(section.len()) > MAX_PREVIEW_BYTES {
-            return Err(limit_error("Human-readable patch preview exceeds 4 MiB"));
-        }
-        preview.push_str(&section);
-        if !preview.ends_with('\n') {
-            preview.push('\n');
+            let original = change.original_content().unwrap_or_default();
+            append_preview(&mut preview, &format!("--- a/{path}\n+++ b/{path}\n"))?;
+            let original_lines = diff_line_count(original);
+            let resulting_lines = diff_line_count(&change.resulting_content);
+            append_preview(
+                &mut preview,
+                &format!(
+                    "@@ -{},{} +{},{} @@\n",
+                    if original_lines == 0 { 0 } else { 1 },
+                    original_lines,
+                    if resulting_lines == 0 { 0 } else { 1 },
+                    resulting_lines,
+                ),
+            )?;
+            append_diff_lines(&mut preview, '-', original)?;
+            append_diff_lines(&mut preview, '+', &change.resulting_content)?;
         }
     }
     Ok(preview)
+}
+
+fn diff_line_count(content: &str) -> usize {
+    content.split_inclusive('\n').count()
+}
+
+fn append_diff_lines(
+    output: &mut String,
+    marker: char,
+    content: &str,
+) -> Result<(), PatchValidationError> {
+    for line in content.split_inclusive('\n') {
+        append_preview(output, &marker.to_string())?;
+        let has_newline = line.ends_with('\n');
+        let body = if has_newline {
+            &line[..line.len() - 1]
+        } else {
+            line
+        };
+        append_escaped_body(output, body)?;
+        append_preview(output, "\n")?;
+        if !has_newline {
+            append_preview(output, "\\ No newline at end of file\n")?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn escape_terminal_text(value: &str) -> Result<String, PatchValidationError> {
+    let mut escaped = String::new();
+    append_escaped_body(&mut escaped, value)?;
+    Ok(escaped)
+}
+
+fn append_escaped_body(output: &mut String, value: &str) -> Result<(), PatchValidationError> {
+    for character in value.chars() {
+        let escaped = match character {
+            '\t' => Some("\\t".to_string()),
+            '\r' => Some("\\r".to_string()),
+            '\u{1b}' => Some("\\x1b".to_string()),
+            '\u{2028}' => Some("\\u{2028}".to_string()),
+            '\u{2029}' => Some("\\u{2029}".to_string()),
+            '\u{061c}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2060}'..='\u{206f}'
+            | '\u{feff}' => Some(format!("\\u{{{:x}}}", character as u32)),
+            character if character.is_control() => Some(format!("\\u{{{:x}}}", character as u32)),
+            character if is_direction_sensitive_rtl(character) => {
+                Some(format!("\\u{{{:x}}}", character as u32))
+            }
+            _ => None,
+        };
+        if let Some(escaped) = escaped {
+            append_preview(output, &escaped)?;
+        } else {
+            append_preview(output, &character.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+// Render RTL-script code points visibly instead of relying on terminal bidi behavior. This is a
+// display-only transformation; validated file contents and their hashes remain unchanged.
+fn is_direction_sensitive_rtl(character: char) -> bool {
+    matches!(
+        character as u32,
+        0x0590..=0x08ff
+            | 0xfb1d..=0xfdff
+            | 0xfe70..=0xfeff
+            | 0x10800..=0x10fff
+            | 0x1e800..=0x1edff
+            | 0x1ee00..=0x1eeff
+            | 0x1ef00..=0x1efff
+    )
+}
+
+fn append_preview(output: &mut String, value: &str) -> Result<(), PatchValidationError> {
+    if output.len().saturating_add(value.len()) > MAX_PREVIEW_BYTES {
+        return Err(limit_error("Human-readable patch preview exceeds 4 MiB"));
+    }
+    output.push_str(value);
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -788,7 +944,7 @@ mod tests {
         assert!(
             a.summary()
                 .preview
-                .contains("+++ src/new.rs (new file) +++")
+                .contains("--- /dev/null\n+++ b/src/new.rs\n@@ -0,0 +1,1 @@\n+pub fn added() {}")
         );
         fixture.cleanup();
     }

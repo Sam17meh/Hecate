@@ -6,6 +6,7 @@
 
 pub mod openai_compatible;
 pub mod patch;
+pub mod patch_approval;
 pub mod patch_validation;
 pub mod provider;
 pub mod repository_tools;

@@ -612,7 +612,7 @@ pub(crate) fn validate_prepared_workspace_capabilities(
     repository_url: &str,
     issue_number: u64,
     plan_artifact_id: &str,
-) -> Result<(), String> {
+) -> Result<VerifiedWorkspaceMetadata, String> {
     ensure_directory_entry_identity(
         workspace_parent_capability,
         workspace_name,
@@ -673,7 +673,17 @@ pub(crate) fn validate_prepared_workspace_capabilities(
     {
         return Err("Stored contribution plan belongs to a different repository".into());
     }
-    Ok(())
+    Ok(VerifiedWorkspaceMetadata {
+        branch: manifest.branch,
+        checkout_commit: manifest.base_commit,
+    })
+}
+
+/// Metadata parsed from the manifest only after its bytes and workspace capabilities have been
+/// verified against the preparation-time identity anchor.
+pub(crate) struct VerifiedWorkspaceMetadata {
+    pub(crate) branch: String,
+    pub(crate) checkout_commit: String,
 }
 
 fn ensure_workspace_path_binding(path: &Path, expected_parent: &Dir) -> Result<(), String> {
@@ -874,7 +884,9 @@ fn same_directory_object(left: &Dir, right: &Dir) -> Result<bool, String> {
         let right = right
             .metadata()
             .map_err(|_| "Could not inspect prepared directory handle".to_string())?;
-        Ok(left.dev() == right.dev() && left.ino() == right.ino())
+        let left = unix_file_identity(left.dev(), left.ino())?;
+        let right = unix_file_identity(right.dev(), right.ino())?;
+        Ok(left == right)
     }
     #[cfg(windows)]
     {
@@ -918,6 +930,68 @@ fn same_directory_object(left: &Dir, right: &Dir) -> Result<bool, String> {
         let _ = (left, right);
         Err("Stable directory identity is unavailable on this platform".into())
     }
+}
+
+/// Return an opaque in-process description of the object referenced by a retained directory
+/// capability. It is useful for binding an approval to live handles, not for reconstructing trust
+/// from a path after the process exits.
+pub(crate) fn directory_object_identity(directory: &Dir) -> Result<String, String> {
+    let file = directory
+        .try_clone()
+        .map(Dir::into_std_file)
+        .map_err(|_| "Could not inspect prepared directory handle".to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = file
+            .metadata()
+            .map_err(|_| "Could not inspect prepared directory handle".to_string())?;
+        unix_file_identity(metadata.dev(), metadata.ino())
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::HANDLE;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx,
+        };
+        let mut info = std::mem::MaybeUninit::<FILE_ID_INFO>::uninit();
+        let succeeded = unsafe {
+            GetFileInformationByHandleEx(
+                file.as_raw_handle() as HANDLE,
+                FileIdInfo,
+                info.as_mut_ptr().cast(),
+                std::mem::size_of::<FILE_ID_INFO>() as u32,
+            )
+        };
+        if succeeded == 0 {
+            return Err("Could not determine prepared directory handle identity".into());
+        }
+        let info = unsafe { info.assume_init() };
+        if info.VolumeSerialNumber == 0 || info.FileId.Identifier == [0; 16] {
+            return Err("Filesystem did not provide a usable prepared directory identity".into());
+        }
+        let id = info
+            .FileId
+            .Identifier
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        Ok(format!("windows:{}:{id}", info.VolumeSerialNumber))
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = file;
+        Err("Stable directory identity is unavailable on this platform".into())
+    }
+}
+
+#[cfg(unix)]
+fn unix_file_identity(device: u64, inode: u64) -> Result<String, String> {
+    if device == 0 || inode == 0 {
+        return Err("Filesystem did not provide a usable prepared directory identity".into());
+    }
+    Ok(format!("unix:{device}:{inode}"))
 }
 
 #[cfg(windows)]
@@ -1277,6 +1351,14 @@ mod tests {
         assert!(!same_directory_object(&left, &right).unwrap());
         drop((left, right));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_directory_identity_rejects_zero_device_or_inode() {
+        assert!(unix_file_identity(0, 7).is_err());
+        assert!(unix_file_identity(7, 0).is_err());
+        assert_eq!(unix_file_identity(7, 9).unwrap(), "unix:7:9");
     }
 
     #[cfg(windows)]
