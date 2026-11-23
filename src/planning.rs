@@ -1,6 +1,7 @@
 use crate::application::{DiscoveryReport, RepositoryAnalysis};
 use crate::discovery::ContributionOpportunity;
 use crate::github::GitHubIssue;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -8,7 +9,7 @@ use std::path::{Path, PathBuf};
 const MAX_DOCUMENTS: usize = 8;
 const MAX_DOCUMENT_BYTES: u64 = 128 * 1024;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlannedLocation {
     pub file: String,
     pub symbol: Option<String>,
@@ -18,13 +19,13 @@ pub struct PlannedLocation {
     pub test_gaps: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlannedDocument {
     pub path: String,
     pub excerpt: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContributionPlan {
     pub repository_url: String,
     pub issue_number: u64,

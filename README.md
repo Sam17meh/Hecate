@@ -105,7 +105,7 @@ Discovery agents should not be the final judges of their own findings. Important
 Hecate may investigate, plan, implement, and verify. The contributor decides what to pursue, reviews changes, and controls whether anything is submitted upstream.
 
 ### 5. Isolation by default
-Future implementation work should happen in isolated worktrees and restricted execution environments. Untrusted repository code must never be treated as safe merely because an AI agent selected it.
+Contribution preparation uses a dedicated local clone and issue branch, separate from the contributor's existing checkout. Future implementation work must also use restricted execution environments. Untrusted repository code must never be treated as safe merely because an AI agent selected it.
 
 ### 6. Useful over impressive
 The goal is not to produce a long report or maximise the number of agents. The goal is to identify a small number of changes that genuinely help a project.
@@ -136,6 +136,15 @@ hecate plan https://github.com/owner/repo 123
 ```
 
 Planning retrieves the same cached repository snapshot and current open issues, then includes issue metadata, candidate code locations, module/import relationships, applicable heuristic test-gap signals, and relevant README/CONTRIBUTING/docs excerpts. It proposes implementation steps, test recommendations, validation commands, risks, assumptions, and unresolved questions. The command only reads and analyzes repository content; it does not implement the issue or modify the target repository. Review the plan and confirm issue scope before any future implementation.
+
+After reviewing a plan, prepare an isolated local clone for that issue. HECATE shows the target and asks for explicit confirmation before creating files:
+
+```bash
+hecate prepare owner/repo 123
+hecate prepare owner/repo 123 --workspace-dir ./hecate-workspaces
+```
+
+By default, workspaces are stored in the platform user-data directory under `.hecate/workspaces`; `HECATE_WORKSPACE_DIR` or `--workspace-dir` can override the root. Each workspace contains a dedicated Git clone in `repository/`, a branch named `hecate/issue-<number>` at the exact commit used for planning, and versioned plan/audit metadata under `.hecate/`. Existing issue workspaces and matching remote branch names are never overwritten or reused. Preparation contacts GitHub to clone the public source and check for a branch-name collision. Git hooks and configured external checkout filters are disabled for the clone and branch checkout, and Git LFS smudging is skipped. HECATE does not push, create pull requests, edit source files, execute repository build/test scripts, or remove workspaces. If an operation fails after reserving the workspace directory, HECATE preserves it for inspection and reports its path.
 
 All issue-to-code mappings and rankings are heuristic suggestions, not confirmed bugs or validated fixes. Current source analysis is Rust-focused. GitHub API rate limits apply to unauthenticated requests; set `GITHUB_TOKEN` or `GH_TOKEN` to use an optional token. Hecate does not modify source code or create pull requests.
 
@@ -256,7 +265,7 @@ These safeguards are design requirements; they are not yet implemented.
 
 ## Project status
 
-**Hecate is in early implementation.** The Rust CLI supports local inspection, public GitHub repository retrieval, Rust source analysis, open-issue retrieval, heuristic issue-to-code mapping and contribution ranking, and evidence-backed draft plans for selected issues. Planning is deterministic and heuristic; it does not reproduce reports, fetch issue comments, independently validate candidates, or implement changes. The project license has not yet been selected.
+**Hecate is in early implementation.** The Rust CLI supports local inspection, public GitHub repository retrieval, Rust source analysis, open-issue retrieval, heuristic issue-to-code mapping and contribution ranking, evidence-backed draft plans, and explicitly approved isolated local Git workspaces. Planning is deterministic and heuristic; it does not reproduce reports, fetch issue comments, independently validate candidates, or implement changes. Workspace preparation does not execute repository code or modify source files. The project license has not yet been selected.
 
 This repository will evolve alongside the implementation. Design decisions, milestones and limitations should remain visible rather than being hidden behind ambitious claims.
 

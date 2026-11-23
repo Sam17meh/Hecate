@@ -4,6 +4,7 @@ mod discovery;
 mod github;
 mod inspection;
 mod planning;
+mod workspace;
 
 use clap::{Parser, Subcommand};
 use std::path::Path;
@@ -29,6 +30,14 @@ enum Commands {
     Plan {
         repository: String,
         issue_number: u64,
+    },
+    /// Review an issue plan, request confirmation, and create an isolated local Git clone
+    Prepare {
+        repository: String,
+        issue_number: u64,
+        /// Override the HECATE-managed workspace root (also configurable via HECATE_WORKSPACE_DIR)
+        #[arg(long)]
+        workspace_dir: Option<std::path::PathBuf>,
     },
 }
 
@@ -60,11 +69,74 @@ fn main() {
             println!("Fetching repository and investigating issue #{issue_number}...");
             application::plan_github_issue(&repository, issue_number).map(|plan| print_plan(&plan))
         }
+        Commands::Prepare {
+            repository,
+            issue_number,
+            workspace_dir,
+        } => prepare_workspace(&repository, issue_number, workspace_dir.as_deref()),
     };
     if let Err(error) = result {
         eprintln!("HECATE: {error}");
         std::process::exit(1);
     }
+}
+
+fn prepare_workspace(
+    repository_input: &str,
+    issue_number: u64,
+    workspace_root: Option<&Path>,
+) -> Result<(), String> {
+    println!("Verifying the open issue and generating its contribution plan...");
+    let (repository, plan) = application::investigate_github_issue(repository_input, issue_number)?;
+    print_plan(&plan);
+    let default_root;
+    let root = if let Some(root) = workspace_root {
+        root
+    } else {
+        default_root = workspace::default_workspace_root();
+        &default_root
+    };
+    let preview = workspace::preview_workspace(&repository, issue_number, root)?;
+    println!("\nHECATE — ISOLATED WORKSPACE PREPARATION");
+    println!("Repository: {}", repository.url);
+    println!("Issue: #{} {}", plan.issue_number, plan.issue_title);
+    println!("Base branch: {}", repository.default_branch);
+    println!("New branch: {}", preview.branch);
+    println!("Workspace: {}", preview.path.display());
+    println!("Git checkout: {}", preview.checkout_path.display());
+    println!(
+        "Plan metadata: .hecate/plan-v1.json (version {})",
+        workspace::PLAN_SCHEMA_VERSION
+    );
+    println!(
+        "\nThis creates a local clone and branch. HECATE will not edit source files, push, or create a pull request."
+    );
+    print!("Create this workspace? [y/N] ");
+    use std::io::Write;
+    std::io::stdout()
+        .flush()
+        .map_err(|error| format!("Could not display confirmation prompt: {error}"))?;
+    let mut response = String::new();
+    std::io::stdin()
+        .read_line(&mut response)
+        .map_err(|error| format!("Could not read confirmation: {error}"))?;
+    if !matches!(response.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+        println!("Cancelled. No workspace files were created.");
+        return Ok(());
+    }
+
+    let result = workspace::create_workspace(&repository, issue_number, &plan, root, true)?;
+    println!("\nWorkspace created successfully.");
+    println!("Branch: {}", result.branch);
+    println!("Checkout: {}", result.checkout_path.display());
+    println!(
+        "Workspace metadata: {}",
+        result.path.join(".hecate").display()
+    );
+    println!("Base commit: {}", result.commit);
+    println!("Git status: {}", result.git_status);
+    println!("No changes have been made to the cloned source tree.");
+    Ok(())
 }
 
 fn print_plan(plan: &planning::ContributionPlan) {

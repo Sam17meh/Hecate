@@ -86,6 +86,14 @@ pub fn discover_github_contributions(input: &str) -> Result<DiscoveryReport, Str
 }
 
 pub fn plan_github_issue(input: &str, issue_number: u64) -> Result<ContributionPlan, String> {
+    investigate_github_issue(input, issue_number).map(|(_, plan)| plan)
+}
+
+pub fn investigate_github_issue(
+    input: &str,
+    issue_number: u64,
+) -> Result<(GitHubRepository, ContributionPlan), String> {
     let report = discover_github_contributions(input)?;
-    plan_discovered_issue(&report, issue_number)
+    let plan = plan_discovered_issue(&report, issue_number)?;
+    Ok((report.github_repository, plan))
 }

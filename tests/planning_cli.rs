@@ -25,3 +25,17 @@ fn plan_command_rejects_a_non_numeric_issue_selection() {
     let error = String::from_utf8_lossy(&output.stderr);
     assert!(error.contains("invalid value"));
 }
+
+#[test]
+fn prepare_command_requires_issue_selection_and_documents_workspace_override() {
+    let output = Command::new(env!("CARGO_BIN_EXE_hecate"))
+        .args(["prepare", "--help"])
+        .output()
+        .expect("HECATE binary should start");
+
+    assert!(output.status.success());
+    let help = String::from_utf8_lossy(&output.stdout);
+    assert!(help.contains("ISSUE_NUMBER"));
+    assert!(help.contains("--workspace-dir"));
+    assert!(help.contains("confirmation"));
+}

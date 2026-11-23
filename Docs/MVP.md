@@ -144,6 +144,10 @@ Each opportunity should contain:
 - Estimated effort.
 - Risk rating.
 
+### FR-08: Approved Isolated Workspace
+
+For a contributor-selected open issue, HECATE may prepare a dedicated local Git clone and issue branch only after explicit confirmation. The workspace must retain the reviewed versioned plan and an audit manifest outside the cloned repository content. Existing workspaces are never overwritten. Preparation must not modify an original checkout, execute repository code, implement the issue, push changes, create a pull request, or remove user data.
+
 The report should also include a concise repository overview and architecture summary.
 
 ## 5. Output Example
