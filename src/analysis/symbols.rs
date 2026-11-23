@@ -10,6 +10,7 @@ pub struct Symbol {
     pub start_line: usize,
     pub end_line: usize,
     pub scope: Vec<String>,
+    pub visibility: Option<String>,
     pub is_test: bool,
 }
 
@@ -115,6 +116,21 @@ fn node_has_test_attribute(node: Node, source_code: &str) -> bool {
     false
 }
 
+fn extract_visibility(node: Node, source_code: &str) -> Result<Option<String>, String> {
+    let mut cursor = node.walk();
+
+    for child in node.children(&mut cursor) {
+        if child.kind() == "visibility_modifier" {
+            let visibility = child
+                .utf8_text(source_code.as_bytes())
+                .map_err(|error| error.to_string())?;
+
+            return Ok(Some(visibility.to_string()));
+        }
+    }
+
+    Ok(None)
+}
 fn collect_symbols(
     parent_node: Node,
     source_code: &str,
@@ -163,6 +179,7 @@ fn collect_symbols(
                     start_line: node.start_position().row + 1,
                     end_line: node.end_position().row + 1,
                     scope: scope.clone(),
+                    visibility: extract_visibility(node, source_code)?,
                     is_test,
                 });
             }
@@ -328,6 +345,75 @@ mod tests {
                 .iter()
                 .any(|s| s.name == "integration_test" && s.is_test)
         );
+    }
+
+    #[test]
+
+    fn extracts_public_and_private_visibility() {
+        let source = r#"
+pub fn public_api() {}
+pub(crate) fn crate_api() {}
+pub(super) fn parent_api() {}
+fn private_helper() {}
+"#;
+
+        let symbols = analyze_rust_file(source, "src/example.rs").unwrap();
+
+        assert_eq!(
+            symbols
+                .iter()
+                .find(|s| s.name == "public_api")
+                .unwrap()
+                .visibility
+                .as_deref(),
+            Some("pub")
+        );
+
+        assert_eq!(
+            symbols
+                .iter()
+                .find(|s| s.name == "crate_api")
+                .unwrap()
+                .visibility
+                .as_deref(),
+            Some("pub(crate)")
+        );
+
+        assert_eq!(
+            symbols
+                .iter()
+                .find(|s| s.name == "parent_api")
+                .unwrap()
+                .visibility
+                .as_deref(),
+            Some("pub(super)")
+        );
+
+        assert_eq!(
+            symbols
+                .iter()
+                .find(|s| s.name == "private_helper")
+                .unwrap()
+                .visibility,
+            None
+        );
+    }
+
+    #[test]
+    fn visibility_does_not_change_test_classification() {
+        let source = r#"
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn example_test() {}
+}
+"#;
+
+        let symbols = analyze_rust_file(source, "src/example.rs").unwrap();
+        let test = symbols.iter().find(|s| s.name == "example_test").unwrap();
+
+        assert!(test.is_test);
+        assert_eq!(test.visibility, None);
     }
 
     #[test]

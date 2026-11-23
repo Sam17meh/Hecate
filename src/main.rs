@@ -3,6 +3,7 @@ mod inspection;
 
 use analysis::architecture::build_architecture_map;
 use analysis::dependencies::build_dependency_graph;
+use analysis::findings::build_findings;
 use analysis::import_resolution::{ImportResolutionKind, build_import_resolution};
 use analysis::module_index::build_module_index;
 use analysis::symbols::analyze_repository;
@@ -438,6 +439,114 @@ fn main() {
                                         "Total import resolution diagnostics: {}",
                                         import_analysis.diagnostics.len()
                                     );
+                                    println!("\n--- HECATE Findings ---");
+
+                                    match &dependency_graph {
+                                        Ok(graph) => {
+                                            let findings = build_findings(&import_analysis, graph);
+
+                                            let mut valid_count = 0usize;
+                                            let mut invalid_count = 0usize;
+
+                                            println!(
+                                                "  Total findings generated: {}",
+                                                findings.len()
+                                            );
+
+                                            if findings.is_empty() {
+                                                println!(
+                                                    "  No actionable findings from the current deterministic analyzers."
+                                                );
+                                            }
+
+                                            for finding in &findings {
+                                                match finding.validate() {
+                                                    Ok(()) => {
+                                                        valid_count += 1;
+
+                                                        println!(
+                                                            "\n  [{}] {}",
+                                                            finding.category as u8, finding.title
+                                                        );
+                                                        println!("    ID: {}", finding.id);
+                                                        println!(
+                                                            "    Description: {}",
+                                                            finding.description
+                                                        );
+                                                        println!(
+                                                            "    Impact: {:?}",
+                                                            finding.impact
+                                                        );
+                                                        println!(
+                                                            "    Confidence: {:?}",
+                                                            finding.confidence
+                                                        );
+                                                        println!(
+                                                            "    Effort: {:?}",
+                                                            finding.effort
+                                                        );
+                                                        println!(
+                                                            "    Validation: {:?}",
+                                                            finding.validation_status
+                                                        );
+
+                                                        for evidence in &finding.evidence {
+                                                            let location = match (
+                                                                evidence.start_line,
+                                                                evidence.end_line,
+                                                            ) {
+                                                                (Some(start), Some(end))
+                                                                    if start == end =>
+                                                                {
+                                                                    format!(":{}", start)
+                                                                }
+                                                                (Some(start), Some(end)) => {
+                                                                    format!(":{}-{}", start, end)
+                                                                }
+                                                                _ => String::new(),
+                                                            };
+
+                                                            println!(
+                                                                "    Evidence: {}{}",
+                                                                evidence.file, location
+                                                            );
+                                                            println!(
+                                                                "      {}",
+                                                                evidence.explanation
+                                                            );
+                                                        }
+                                                    }
+                                                    Err(errors) => {
+                                                        invalid_count += 1;
+                                                        println!(
+                                                            "\n  Skipping invalid finding: {}",
+                                                            finding.id
+                                                        );
+
+                                                        for error in errors {
+                                                            println!(
+                                                                "    Validation error: {}",
+                                                                error
+                                                            );
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            println!("\nFindings Summary");
+                                            println!("  Valid findings: {}", valid_count);
+                                            println!(
+                                                "  Invalid findings skipped: {}",
+                                                invalid_count
+                                            );
+                                        }
+                                        Err(error) => {
+                                            println!(
+                                                "  Findings unavailable because dependency analysis failed: {}",
+                                                error
+                                            );
+                                        }
+                                    }
                                     println!("\n--- Repository Architecture Map ---");
 
                                     match &dependency_graph {
