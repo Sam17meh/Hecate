@@ -748,46 +748,10 @@ pub(crate) fn escape_terminal_text(value: &str) -> Result<String, PatchValidatio
 }
 
 fn append_escaped_body(output: &mut String, value: &str) -> Result<(), PatchValidationError> {
-    for character in value.chars() {
-        let escaped = match character {
-            '\t' => Some("\\t".to_string()),
-            '\r' => Some("\\r".to_string()),
-            '\u{1b}' => Some("\\x1b".to_string()),
-            '\u{2028}' => Some("\\u{2028}".to_string()),
-            '\u{2029}' => Some("\\u{2029}".to_string()),
-            '\u{061c}'
-            | '\u{200b}'..='\u{200f}'
-            | '\u{202a}'..='\u{202e}'
-            | '\u{2060}'..='\u{206f}'
-            | '\u{feff}' => Some(format!("\\u{{{:x}}}", character as u32)),
-            character if character.is_control() => Some(format!("\\u{{{:x}}}", character as u32)),
-            character if is_direction_sensitive_rtl(character) => {
-                Some(format!("\\u{{{:x}}}", character as u32))
-            }
-            _ => None,
-        };
-        if let Some(escaped) = escaped {
-            append_preview(output, &escaped)?;
-        } else {
-            append_preview(output, &character.to_string())?;
-        }
-    }
-    Ok(())
-}
-
-// Render RTL-script code points visibly instead of relying on terminal bidi behavior. This is a
-// display-only transformation; validated file contents and their hashes remain unchanged.
-fn is_direction_sensitive_rtl(character: char) -> bool {
-    matches!(
-        character as u32,
-        0x0590..=0x08ff
-            | 0xfb1d..=0xfdff
-            | 0xfe70..=0xfeff
-            | 0x10800..=0x10fff
-            | 0x1e800..=0x1edff
-            | 0x1ee00..=0x1eeff
-            | 0x1ef00..=0x1efff
-    )
+    let remaining = MAX_PREVIEW_BYTES.saturating_sub(output.len());
+    let escaped = crate::terminal::escape::patch_preview(value, remaining)
+        .map_err(|_| limit_error("Human-readable patch preview exceeds 4 MiB"))?;
+    append_preview(output, &escaped)
 }
 
 fn append_preview(output: &mut String, value: &str) -> Result<(), PatchValidationError> {

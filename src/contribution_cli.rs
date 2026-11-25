@@ -3,8 +3,9 @@
 use crate::agent::patch::{PATCH_PROPOSAL_SCHEMA_VERSION, PatchProposal, ValidatedPatch};
 use crate::agent::patch_application::{ApplicationReport, ApplicationStatus, OperationStatus};
 use crate::agent::patch_approval::{ApprovalError, ApprovedPatch};
-use crate::agent::patch_validation::{PatchValidator, escape_terminal_text};
+use crate::agent::patch_validation::PatchValidator;
 use crate::agent::session::ContributionContext;
+use crate::terminal::escape::single_line;
 use crate::workspace::WorkspaceResult;
 use std::fs::{self, File};
 use std::io::{BufRead, Read, Write};
@@ -249,7 +250,7 @@ pub(crate) fn safe_cli_error(message: &str) -> String {
 }
 
 fn safe_text(value: &str) -> Result<String, String> {
-    escape_terminal_text(value).map_err(|_| "Could not safely render terminal text".to_string())
+    Ok(single_line(value))
 }
 
 #[cfg(test)]

@@ -6,10 +6,18 @@ mod discovery;
 mod github;
 mod inspection;
 mod planning;
+mod terminal;
 mod workspace;
 
 use clap::{Parser, Subcommand};
 use std::path::Path;
+
+macro_rules! safe_line {
+    ($($argument:tt)*) => {{
+        let line = format!($($argument)*);
+        println!("{}", terminal::escape::single_line(&line));
+    }};
+}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -77,8 +85,8 @@ fn main() {
             }
         }
         Commands::Discover { repository } => {
-            println!(
-                "Fetching repository and open issues from GitHub, then analyzing local Rust source..."
+            terminal::presentation::information(
+                "Fetching repository and open issues from GitHub, then analyzing local Rust source...",
             );
             application::discover_github_contributions(&repository)
                 .map(|report| print_discovery(&report))
@@ -87,7 +95,9 @@ fn main() {
             repository,
             issue_number,
         } => {
-            println!("Fetching repository and investigating issue #{issue_number}...");
+            terminal::presentation::information(&format!(
+                "Fetching repository and investigating issue #{issue_number}..."
+            ));
             application::plan_github_issue(&repository, issue_number).map(|plan| print_plan(&plan))
         }
         Commands::Prepare {
@@ -111,7 +121,7 @@ fn main() {
         .map_err(|error| contribution_cli::safe_cli_error(&error)),
     };
     if let Err(error) = result {
-        eprintln!("HECATE: {error}");
+        terminal::presentation::error(&error);
         std::process::exit(1);
     }
 }
@@ -146,7 +156,9 @@ fn prepare_workspace_with_proposal(
     applying_proposal: bool,
     model_generation: bool,
 ) -> Result<Option<PreparedContribution>, String> {
-    println!("Verifying the open issue and generating its contribution plan...");
+    terminal::presentation::information(
+        "Verifying the open issue and generating its contribution plan...",
+    );
     let (repository, plan) = application::investigate_github_issue(repository_input, issue_number)?;
     if display_full_plan {
         print_plan(&plan);
@@ -159,7 +171,7 @@ fn prepare_workspace_with_proposal(
         &default_root
     };
     let preview = workspace::preview_workspace(&repository, issue_number, root)?;
-    println!("\nHECATE — ISOLATED WORKSPACE PREPARATION");
+    terminal::presentation::section_title("HECATE — ISOLATED WORKSPACE PREPARATION");
     println!(
         "Repository: {}",
         contribution_cli::safe_cli_error(&repository.url)
@@ -210,7 +222,7 @@ fn prepare_workspace_with_proposal(
     let Some(result) = result else {
         return Ok(None);
     };
-    println!("\nWorkspace created successfully.");
+    terminal::presentation::success("Workspace created successfully.");
     println!(
         "Branch: {}",
         contribution_cli::safe_cli_error(&result.branch)
@@ -305,7 +317,9 @@ fn contribute(
                 error.message
             )
         })?;
-        println!("Generating an untrusted patch proposal with the configured model...");
+        terminal::presentation::warning(
+            "Generating an untrusted patch proposal with the configured model...",
+        );
         let generated = agent::proposal_generation::generate_patch_proposal(
             provider,
             &prepared.workspace,
@@ -354,11 +368,11 @@ fn contribute(
 }
 
 fn print_plan(plan: &planning::ContributionPlan) {
-    println!("HECATE — CONTRIBUTION PLAN (FOR HUMAN REVIEW)");
-    println!("Repository: {}", plan.repository_url);
-    println!("Issue: #{} {}", plan.issue_number, plan.issue_title);
-    println!("URL: {}", plan.issue_url);
-    println!(
+    terminal::presentation::section_title("HECATE — CONTRIBUTION PLAN (FOR HUMAN REVIEW)");
+    safe_line!("Repository: {}", plan.repository_url);
+    safe_line!("Issue: #{} {}", plan.issue_number, plan.issue_title);
+    safe_line!("URL: {}", plan.issue_url);
+    safe_line!(
         "Labels: {}",
         if plan.labels.is_empty() {
             "none".into()
@@ -366,22 +380,24 @@ fn print_plan(plan: &planning::ContributionPlan) {
             plan.labels.join(", ")
         }
     );
-    println!(
+    safe_line!(
         "Created: {} | updated: {} | comments: {}",
-        plan.created_at, plan.updated_at, plan.comments
+        plan.created_at,
+        plan.updated_at,
+        plan.comments
     );
-    println!("\nExpected outcome");
-    println!("  {}", plan.expected_outcome);
-    println!("\nProblem interpretation (hypothesis)");
-    println!("  {}", plan.interpretation);
-    println!("\nRelevant code evidence");
+    terminal::presentation::section_title("Expected outcome");
+    safe_line!("  {}", plan.expected_outcome);
+    terminal::presentation::section_title("Problem interpretation (hypothesis)");
+    safe_line!("  {}", plan.interpretation);
+    terminal::presentation::section_title("Relevant code evidence");
     if plan.locations.is_empty() {
-        println!(
+        safe_line!(
             "  No relevant code location was identified. Treat the issue as unlocated; inspect manually before implementation."
         );
     }
     for location in &plan.locations {
-        println!(
+        safe_line!(
             "  {}{}{}",
             location.file,
             location
@@ -395,48 +411,50 @@ fn print_plan(plan: &planning::ContributionPlan) {
                 .unwrap_or_default()
         );
         for evidence in &location.evidence {
-            println!("    Evidence: {evidence}");
+            safe_line!("    Evidence: {evidence}");
         }
         for relationship in &location.relationships {
-            println!("    Relationship: {relationship}");
+            safe_line!("    Relationship: {relationship}");
         }
         for gap in &location.test_gaps {
-            println!("    Test-gap signal (heuristic): {gap}");
+            safe_line!("    Test-gap signal (heuristic): {gap}");
         }
     }
-    println!("\nRelevant repository documentation");
+    terminal::presentation::section_title("Relevant repository documentation");
     if plan.documents.is_empty() {
-        println!("  No relevant documentation excerpt found (or documentation is unavailable).");
+        safe_line!("  No relevant documentation excerpt found (or documentation is unavailable).");
     }
     for document in &plan.documents {
-        println!("  {} — {}", document.path, document.excerpt);
+        safe_line!("  {} —", document.path);
+        terminal::presentation::multiline_block("    ", &document.excerpt);
     }
-    println!("\nProposed steps");
+    terminal::presentation::section_title("Proposed steps");
     for (index, step) in plan.steps.iter().enumerate() {
-        println!("  {}. {}", index + 1, step);
+        safe_line!("  {}. {}", index + 1, step);
     }
-    println!("\nTests and validation");
+    terminal::presentation::section_title("Tests and validation");
     for test in &plan.test_recommendations {
-        println!("  - {test}");
+        safe_line!("  - {test}");
     }
     for command in &plan.validation_commands {
-        println!("  - Run: {command}");
+        safe_line!("  - Run: {command}");
     }
-    println!("\nRisks and assumptions");
+    terminal::presentation::section_title("Risks and assumptions");
     for item in &plan.risks_and_assumptions {
-        println!("  - {item}");
+        safe_line!("  - {item}");
     }
-    println!("\nUnresolved questions");
+    terminal::presentation::section_title("Unresolved questions");
     if plan.unresolved_questions.is_empty() {
-        println!(
+        safe_line!(
             "  None identified from available issue and repository evidence; confirm acceptance criteria with maintainers."
         );
     }
     for question in &plan.unresolved_questions {
-        println!("  - {question}");
+        safe_line!("  - {question}");
     }
-    println!(
-        "\nThis is a heuristic investigation plan, not a confirmed diagnosis or code change. Review it and select/approve any future implementation yourself."
+    println!();
+    safe_line!(
+        "This is a heuristic investigation plan, not a confirmed diagnosis or code change. Review it and select/approve any future implementation yourself."
     );
 }
 
@@ -444,12 +462,12 @@ fn print_analysis(
     analysis: &application::RepositoryAnalysis,
     github: Option<&github::GitHubRepository>,
 ) {
-    println!("HECATE — REPOSITORY INSPECTION");
+    terminal::presentation::section_title("HECATE — REPOSITORY INSPECTION");
     if let Some(repository) = github {
-        println!("Repository: {} ({})", repository.url, repository.commit);
+        safe_line!("Repository: {} ({})", repository.url, repository.commit);
     }
-    println!("Root: {}", analysis.repository.root.display());
-    println!(
+    safe_line!("Root: {}", analysis.repository.root.display());
+    safe_line!(
         "Git repository: {}",
         if analysis.repository.is_git_repository {
             "yes"
@@ -457,7 +475,7 @@ fn print_analysis(
             "no"
         }
     );
-    println!(
+    safe_line!(
         "Languages: {}",
         analysis
             .repository
@@ -467,12 +485,12 @@ fn print_analysis(
             .collect::<Vec<_>>()
             .join(", ")
     );
-    println!("Source files: {}", analysis.repository.source_files.len());
-    println!(
+    safe_line!("Source files: {}", analysis.repository.source_files.len());
+    safe_line!(
         "Top-level entries: {}",
         analysis.repository.entries.join(", ")
     );
-    println!(
+    safe_line!(
         "Project markers: {}",
         if analysis.repository.project_markers.is_empty() {
             "none".to_string()
@@ -480,7 +498,7 @@ fn print_analysis(
             analysis.repository.project_markers.join(", ")
         }
     );
-    println!(
+    safe_line!(
         "Rust modules indexed: {}",
         analysis.module_index.modules.len()
     );
@@ -490,33 +508,38 @@ fn print_analysis(
         } else {
             module.module_path.join("::")
         };
-        println!(
+        safe_line!(
             "  module {logical} [{}] -> {}",
-            module.crate_root, module.file
+            module.crate_root,
+            module.file
         );
     }
     for unresolved in &analysis.module_index.unresolved_modules {
-        println!(
+        safe_line!(
             "  unresolved module {} in {} ({})",
-            unresolved.module_name, unresolved.source, unresolved.crate_root
+            unresolved.module_name,
+            unresolved.source,
+            unresolved.crate_root
         );
     }
     for diagnostic in &analysis.module_index.diagnostics {
-        println!(
+        safe_line!(
             "  module index diagnostic [{}] {}: {}",
-            diagnostic.crate_root, diagnostic.file, diagnostic.message
+            diagnostic.crate_root,
+            diagnostic.file,
+            diagnostic.message
         );
     }
-    println!(
+    safe_line!(
         "Module dependencies: {}",
         analysis.dependency_graph.dependencies.len()
     );
-    println!(
+    safe_line!(
         "Unresolved module declarations: {}",
         analysis.dependency_graph.unresolved_modules.len()
     );
     for dependency in &analysis.dependency_graph.dependencies {
-        println!(
+        safe_line!(
             "  {} -> {} ({}{})",
             dependency.source,
             dependency.target,
@@ -529,31 +552,38 @@ fn print_analysis(
         );
     }
     for unresolved in &analysis.dependency_graph.unresolved_modules {
-        println!(
+        safe_line!(
             "  unresolved declaration {} in {}",
-            unresolved.module_name, unresolved.source
+            unresolved.module_name,
+            unresolved.source
         );
     }
     for error in &analysis.dependency_graph.parse_errors {
-        println!("  parse diagnostic {}: {}", error.source, error.message);
+        safe_line!("  parse diagnostic {}: {}", error.source, error.message);
     }
-    println!("Rust symbols: {}", analysis.symbols.symbols.len());
+    safe_line!("Rust symbols: {}", analysis.symbols.symbols.len());
     for symbol in &analysis.symbols.symbols {
         let test = if symbol.is_test { " [test]" } else { "" };
-        println!(
+        safe_line!(
             "  {} {}:{}:{}-{}{}",
-            symbol.kind, symbol.name, symbol.file, symbol.start_line, symbol.end_line, test
+            symbol.kind,
+            symbol.name,
+            symbol.file,
+            symbol.start_line,
+            symbol.end_line,
+            test
         );
     }
     for diagnostic in &analysis.symbols.diagnostics {
-        println!(
+        safe_line!(
             "  symbol diagnostic {}: {}",
-            diagnostic.file, diagnostic.message
+            diagnostic.file,
+            diagnostic.message
         );
     }
-    println!("Imports analyzed: {}", analysis.imports.imports.len());
+    safe_line!("Imports analyzed: {}", analysis.imports.imports.len());
     for import in &analysis.imports.imports {
-        println!(
+        safe_line!(
             "  [{:?}] {}:{} {}{}{}",
             import.kind,
             import.source,
@@ -568,17 +598,18 @@ fn print_analysis(
         );
     }
     for diagnostic in &analysis.imports.diagnostics {
-        println!(
+        safe_line!(
             "  import diagnostic {}: {}",
-            diagnostic.file, diagnostic.message
+            diagnostic.file,
+            diagnostic.message
         );
     }
-    println!(
+    safe_line!(
         "Potential test gaps (heuristic): {}",
         analysis.test_gaps.gaps.len()
     );
     for gap in &analysis.test_gaps.gaps {
-        println!(
+        safe_line!(
             "  {} {}:{}-{} — {}",
             gap.symbol.name,
             gap.symbol.file,
@@ -588,13 +619,14 @@ fn print_analysis(
         );
     }
     for diagnostic in &analysis.test_gaps.diagnostics {
-        println!(
+        safe_line!(
             "  test-gap diagnostic {}: {}",
-            diagnostic.file, diagnostic.message
+            diagnostic.file,
+            diagnostic.message
         );
     }
     let summary = &analysis.architecture.summary;
-    println!(
+    safe_line!(
         "Architecture files: {} ({} Rust) | with symbols: {} | without symbols: {} | symbols: {} ({} tests) | dependencies: {} | unresolved modules: {} | parse errors: {} | symbol diagnostics: {} | total diagnostics: {}",
         summary.total_source_files,
         summary.rust_files,
@@ -614,9 +646,9 @@ fn print_analysis(
         } else {
             ""
         };
-        println!("  {}{}", file.path, classification);
+        safe_line!("  {}{}", file.path, classification);
         for dependency in &file.dependencies {
-            println!("    -> {dependency}");
+            safe_line!("    -> {dependency}");
         }
         for symbol in &file.symbols {
             let scope = if symbol.scope.is_empty() {
@@ -625,27 +657,32 @@ fn print_analysis(
                 format!(" [{}]", symbol.scope.join("::"))
             };
             let test = if symbol.is_test { " [test]" } else { "" };
-            println!(
+            safe_line!(
                 "    {} {}:{}-{}{}{}",
-                symbol.kind, symbol.name, symbol.start_line, symbol.end_line, scope, test
+                symbol.kind,
+                symbol.name,
+                symbol.start_line,
+                symbol.end_line,
+                scope,
+                test
             );
         }
     }
     for diagnostic in &analysis.architecture.diagnostics {
-        println!(
+        safe_line!(
             "  architecture diagnostic [{}] {}: {}",
             diagnostic.category,
             diagnostic.file.as_deref().unwrap_or("<repository>"),
             diagnostic.message
         );
     }
-    println!(
+    safe_line!(
         "Current deterministic findings: {}",
         analysis.findings.len()
     );
     for finding in &analysis.findings {
         if let Err(errors) = finding.validate() {
-            println!(
+            safe_line!(
                 "  skipping invalid finding {}: {}",
                 finding.id,
                 errors.join("; ")
@@ -665,7 +702,7 @@ fn print_analysis(
                 )
             })
             .unwrap_or_default();
-        println!(
+        safe_line!(
             "  [{:?}] {} — {} (impact {:?}, confidence {:?}, effort {:?}, {:?})",
             finding.category,
             finding.title,
@@ -676,21 +713,23 @@ fn print_analysis(
             finding.validation_status
         );
         for evidence in &finding.evidence {
-            println!("    {}", evidence.explanation);
+            safe_line!("    {}", evidence.explanation);
         }
     }
-    println!("\nAnalysis is static; findings and test-gap signals require human review.");
+    println!();
+    safe_line!("Analysis is static; findings and test-gap signals require human review.");
 }
 
 fn print_discovery(report: &application::DiscoveryReport) {
-    println!("HECATE — GITHUB CONTRIBUTION DISCOVERY");
-    println!("Repository: {}", report.github_repository.url);
-    println!(
+    terminal::presentation::section_title("HECATE — GITHUB CONTRIBUTION DISCOVERY");
+    safe_line!("Repository: {}", report.github_repository.url);
+    safe_line!(
         "Default branch: {} | commit: {}",
-        report.github_repository.default_branch, report.github_repository.commit
+        report.github_repository.default_branch,
+        report.github_repository.commit
     );
-    println!("Open issues analyzed: {}", report.issues.len());
-    println!(
+    safe_line!("Open issues analyzed: {}", report.issues.len());
+    safe_line!(
         "Rust files: {} | modules: {} | symbols: {}",
         report
             .analysis
@@ -703,19 +742,24 @@ fn print_discovery(report: &application::DiscoveryReport) {
         report.analysis.symbols.symbols.len()
     );
     if report.opportunities.is_empty() {
-        println!("\nNo open issues were returned by GitHub.");
+        println!();
+        safe_line!("No open issues were returned by GitHub.");
         return;
     }
-    println!("\nRanked opportunities (heuristic; review issue and code evidence before choosing):");
+    terminal::presentation::section_title("Ranked opportunities");
+    terminal::presentation::warning(
+        "Rankings and matches are heuristic; review issue and code evidence before choosing.",
+    );
     for (index, opportunity) in report.opportunities.iter().take(10).enumerate() {
-        println!(
-            "\n{}. #{} {} [{}]",
+        println!();
+        safe_line!(
+            "{}. #{} {} [{}]",
             index + 1,
             opportunity.issue.number,
             opportunity.issue.title,
             opportunity.ranking.score
         );
-        println!("   {}", opportunity.issue.url);
+        safe_line!("   {}", opportunity.issue.url);
         if !opportunity.issue.body.trim().is_empty() {
             let normalized_body = opportunity
                 .issue
@@ -734,7 +778,7 @@ fn print_discovery(report: &application::DiscoveryReport) {
                 .collect::<Vec<_>>()
                 .join(" ");
             let preview = compact_body.chars().take(280).collect::<String>();
-            println!(
+            safe_line!(
                 "   {}{}",
                 preview,
                 if compact_body.chars().count() > 280 {
@@ -744,14 +788,15 @@ fn print_discovery(report: &application::DiscoveryReport) {
                 }
             );
         }
-        println!(
+        safe_line!(
             "   Updated: {} | comments: {}",
-            opportunity.issue.updated_at, opportunity.issue.comments
+            opportunity.issue.updated_at,
+            opportunity.issue.comments
         );
         if !opportunity.issue.labels.is_empty() {
-            println!("   Labels: {}", opportunity.issue.labels.join(", "));
+            safe_line!("   Labels: {}", opportunity.issue.labels.join(", "));
         }
-        println!(
+        safe_line!(
             "   Factor scores /100: relevance {}, impact {}, confidence {}, effort {}, risk {}",
             opportunity.ranking.relevance,
             opportunity.ranking.impact,
@@ -760,14 +805,14 @@ fn print_discovery(report: &application::DiscoveryReport) {
             opportunity.ranking.risk
         );
         for rationale in &opportunity.ranking.rationale {
-            println!("   - {rationale}");
+            safe_line!("   - {rationale}");
         }
         if opportunity.matches.is_empty() {
-            println!(
+            safe_line!(
                 "   No source location matched the issue text; this is not evidence that the issue lacks a code fix."
             );
         } else {
-            println!("   Possible code locations:");
+            safe_line!("   Possible code locations:");
             for matched in &opportunity.matches {
                 let symbol = matched
                     .symbol
@@ -782,15 +827,18 @@ fn print_discovery(report: &application::DiscoveryReport) {
                         )
                     })
                     .unwrap_or_default();
-                println!(
+                safe_line!(
                     "   - {}{} (relevance {})",
-                    matched.file, symbol, matched.relevance
+                    matched.file,
+                    symbol,
+                    matched.relevance
                 );
                 for evidence in &matched.evidence {
-                    println!("     {evidence}");
+                    safe_line!("     {evidence}");
                 }
             }
         }
     }
-    println!("\nPlan a selected issue with: hecate plan <repository> <issue-number>");
+    println!();
+    safe_line!("Plan a selected issue with: hecate plan <repository> <issue-number>");
 }
