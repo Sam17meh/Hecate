@@ -2,47 +2,30 @@ use super::dependencies::DependencyGraph;
 use super::import_resolution::{ImportResolutionAnalysis, ImportResolutionKind};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FindingCategory {
-    Bug,
-    Security,
-    Testing,
     Architecture,
-    Performance,
     Reliability,
-    Documentation,
-    Maintainability,
     Dependency,
-    ContributionOpportunity,
-    Other,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Impact {
-    Low,
     Medium,
-    High,
-    Critical,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Confidence {
     Low,
     Medium,
-    High,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Effort {
     Small,
-    Medium,
-    Large,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValidationStatus {
-    Observed,
     NeedsValidation,
-    Validated,
-    Rejected,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -310,7 +293,7 @@ mod tests {
     fn valid_finding() -> Finding {
         Finding {
             id: "rust-test-gap-001".to_string(),
-            category: FindingCategory::Testing,
+            category: FindingCategory::Reliability,
             title: "Potential missing test coverage".to_string(),
             description: "A public function has no corresponding test.".to_string(),
             evidence: vec![FindingEvidence {

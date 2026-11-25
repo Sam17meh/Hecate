@@ -45,7 +45,7 @@ flowchart LR
 
 `inspect` accepts a local directory or GitHub repository. `discover` obtains open issues and ranks possible code matches. `plan` investigates one issue and prints a draft plan. `prepare` obtains the current issue/plan, previews the workspace and asks before creating the local clone and branch. `contribute REPOSITORY ISSUE --proposal FILE` uses a bounded user-supplied proposal, while `--generate` invokes the native runtime with only registered read-only repository tools. Both paths validate, preview completely, require full-hash interactive approval, and apply through the existing one-use controlled application API. The actual `WorkspaceResult` remains live during the operation; the CLI does not reconstruct trust from a workspace path. Model output is still untrusted. No repository build/test code is run.
 
-GitHub requests use the blocking `reqwest` client and optional `GITHUB_TOKEN`/`GH_TOKEN`. Source archives are cached by repository and commit; issue data is fetched from the API when requested. Source extraction has archive and expanded-size bounds and skips archive links.
+GitHub requests use the blocking `reqwest` client and optional `GITHUB_TOKEN`/`GH_TOKEN`. JSON responses are limited to 8 MiB each, error details are read up to 4 KiB, and issue pagination is bounded to 64 MiB of response data and 10,000 issues. Source archives are cached by repository and commit; issue data is fetched from the API when requested. Source extraction has archive and expanded-size bounds and skips archive links.
 
 ## Native agent data flow
 

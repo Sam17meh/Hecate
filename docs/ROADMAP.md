@@ -27,7 +27,7 @@ The CLI provides `inspect`, `discover`, `plan`, `prepare`, and `contribute`. The
 
 ## Future work
 
-Milestones 4A through 4D.3 are implemented. The next planned milestone is 5: independent review and verification. It is not implemented; repository test/command execution still requires a separately reviewed, restricted execution design.
+Milestones 4A through 4D.3 and the Milestone 5 engineering review, security hardening, and release-readiness assessment are complete. CI now configures formatting, checking, and tests on Windows, Ubuntu, and macOS; this configuration is not evidence those remote jobs have passed. The in-product independent review/verification report and repository test/command execution are not implemented. Repository command execution still requires a separately reviewed, restricted execution design. See [the Milestone 5 audit and release-readiness report](MILESTONE5_AUDIT.md).
 
 ### Milestone 4D.2.1 — Approval Foundation (implemented)
 
@@ -45,8 +45,8 @@ Consumes the approval once, stages and verifies result and backup files before t
 
 `src/agent/proposal_generation.rs` runs the existing bounded `AgentRuntime` with the configured provider and only the six existing read-only repository tools. It supplies bounded contribution-plan context, accepts strict version-1 `PatchProposal` JSON only, and returns an untrusted proposal. `contribute --generate` sends that result through the existing patch validator, complete preview, human approval, and controlled application path. No trusted patch or approval type is model-constructible. There is no shell, test runner, automatic commit/push/PR, or independent verification; these remain outside Milestone 4.
 
-### Milestone 5 — Independent Review and Verification (future)
+### Milestone 5 — Independent Review, Security Hardening, and Release Readiness (engineering review complete)
 
-Design independent review and verification reports for proposed changes. Any repository command or test execution requires a separately designed, restricted execution environment. This milestone is not implemented.
+The project-wide independent engineering/security review and release-readiness assessment are recorded in [MILESTONE5_AUDIT.md](MILESTONE5_AUDIT.md). This does not implement an in-product independent review of generated proposals. Any repository command or test execution requires a separately designed, restricted execution environment and remains future work.
 
 MCP remains a possible later interface, not part of the milestones above and not implemented today. Ordering and scope should be revisited against the threat model and user approval before implementation.

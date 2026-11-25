@@ -126,7 +126,7 @@ Discover contribution opportunities from a public repository's open issues:
 hecate discover owner/repo
 ```
 
-Discovery retrieves the default-branch source archive and paginated open issues, excludes pull requests, then applies the existing Rust analyzers and deterministic text matching to suggest possible files and symbols. Results include factor scores and matching evidence.
+Discovery retrieves the default-branch source archive and paginated open issues, excludes pull requests, then applies the existing Rust analyzers and deterministic text matching to suggest possible files and symbols. Results include factor scores and matching evidence. GitHub JSON responses are limited to 8 MiB each; issue pagination is limited to 64 MiB of aggregate response data and 10,000 issues.
 
 Select an issue number from the discovery results to investigate it and generate a reviewable contribution plan:
 
@@ -245,7 +245,7 @@ The canonical implementation documentation is in [`docs/`](docs/):
 
 ## Roadmap
 
-Repository inspection, GitHub contribution discovery, planning, approved workspace preparation, the native agent runtime, and both user-supplied and model-generated proposal modes in `contribute` are implemented. Generated changes still require deterministic validation and full-hash human approval. Independent review/verification (Milestone 5) remains future work. See the [detailed roadmap](docs/ROADMAP.md).
+Repository inspection, GitHub contribution discovery, planning, approved workspace preparation, the native agent runtime, and both user-supplied and model-generated proposal modes in `contribute` are implemented. Generated changes still require deterministic validation and full-hash human approval. The Milestone 5 engineering review and hardening are recorded in the [release-readiness report](docs/MILESTONE5_AUDIT.md); independent review of proposed changes remains future work. See the [detailed roadmap](docs/ROADMAP.md).
 
 ## Safety and trust
 

@@ -5,7 +5,9 @@ use cap_std::fs::{Dir, OpenOptions as CapOpenOptions, OpenOptionsExt};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::ffi::{OsStr, OsString};
-use std::fs::{self, OpenOptions};
+use std::fs;
+#[cfg(test)]
+use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -471,6 +473,7 @@ pub(crate) fn create_workspace_from_source_for_tests(
     create_workspace_from_source(repository, plan, preview, source_url)
 }
 
+#[cfg(test)]
 pub fn save_plan(path: &Path, plan: &ContributionPlan) -> Result<(), String> {
     write_json_bytes_new(path, &encode_plan(plan)?)
 }
@@ -485,6 +488,7 @@ fn encode_plan(plan: &ContributionPlan) -> Result<Vec<u8>, String> {
         .map_err(|error| format!("Could not serialize contribution plan: {error}"))
 }
 
+#[cfg(test)]
 pub fn load_plan(path: &Path) -> Result<ContributionPlan, String> {
     let metadata = fs::metadata(path)
         .map_err(|error| format!("Could not inspect stored contribution plan: {error}"))?;
@@ -1098,12 +1102,7 @@ fn read_workspace_metadata(root: &Dir, relative: &str, limit: usize) -> Result<V
     Ok(content)
 }
 
-fn write_json_new<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
-    let bytes = serde_json::to_vec_pretty(value)
-        .map_err(|error| format!("Could not serialize HECATE metadata: {error}"))?;
-    write_json_bytes_new(path, &bytes)
-}
-
+#[cfg(test)]
 fn write_json_bytes_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let mut file = OpenOptions::new()
         .write(true)

@@ -12,7 +12,7 @@ This is a modular Rust binary crate. `src/main.rs` parses the CLI and renders ou
 
 - `src/inspection/`: local repository inventory and language/file discovery.
 - `src/analysis/`: Rust module, dependency, symbol, import, architecture, test-gap, and finding analysis. Tree-sitter is used for Rust syntax-aware analysis.
-- `src/github.rs`: GitHub API access, source archive cache, and issue/repository models.
+- `src/github.rs`: GitHub API access, source archive cache, and issue/repository models. JSON responses are capped at 8 MiB; issue pagination is capped at 64 MiB of aggregate response data and 10,000 issues.
 - `src/discovery.rs`, `src/planning.rs`: heuristic issue mapping/ranking and reviewable contribution plans.
 - `src/workspace.rs`: approved workspace creation, plan/manifest serialization and validation, and fixed Git operations.
 - `src/agent/`: provider contract, deterministic mock and OpenAI-compatible HTTP provider, runtime loop, versioned session context, permission-aware tool registry, six read-only prepared-workspace tools, and untrusted patch proposal generation.

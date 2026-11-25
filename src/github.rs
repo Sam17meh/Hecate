@@ -9,6 +9,10 @@ use std::time::Duration;
 
 const MAX_SOURCE_ARCHIVE_BYTES: u64 = 200 * 1024 * 1024;
 const MAX_EXTRACTED_SOURCE_BYTES: u64 = 1024 * 1024 * 1024;
+const MAX_GITHUB_JSON_RESPONSE_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_GITHUB_ERROR_RESPONSE_BYTES: u64 = 4 * 1024;
+const MAX_GITHUB_ISSUES_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_GITHUB_ISSUES: usize = 10_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitHubRepository {
@@ -138,7 +142,9 @@ impl GitHubClient {
                 "GitHub repository or resource was not found, or is not public".to_string(),
             );
         }
-        let detail = response.text().unwrap_or_default();
+        let detail = read_response_limited(response, MAX_GITHUB_ERROR_RESPONSE_BYTES)
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            .unwrap_or_else(|_| "<error response omitted>".to_string());
         Err(format!(
             "GitHub API returned HTTP {status}: {}",
             detail.chars().take(300).collect::<String>()
@@ -146,9 +152,20 @@ impl GitHubClient {
     }
 
     fn json<T: for<'de> Deserialize<'de>>(&self, url: &str) -> Result<T, String> {
-        self.request(url)?
-            .json()
-            .map_err(|error| format!("Could not decode GitHub API response: {error}"))
+        self.json_with_limit(url, MAX_GITHUB_JSON_RESPONSE_BYTES)
+            .map(|(value, _)| value)
+    }
+
+    fn json_with_limit<T: for<'de> Deserialize<'de>>(
+        &self,
+        url: &str,
+        limit: u64,
+    ) -> Result<(T, u64), String> {
+        let bytes = read_response_limited(self.request(url)?, limit)?;
+        let length = bytes.len() as u64;
+        let value = serde_json::from_slice(&bytes)
+            .map_err(|error| format!("Could not decode GitHub API response: {error}"))?;
+        Ok((value, length))
     }
 
     pub fn repository(&self, input: &str) -> Result<GitHubRepository, String> {
@@ -210,14 +227,22 @@ impl GitHubClient {
 
     pub fn open_issues(&self, repository: &GitHubRepository) -> Result<Vec<GitHubIssue>, String> {
         let mut issues = Vec::new();
+        let mut response_bytes = 0u64;
         let base = self.api_base.trim_end_matches('/');
         for page in 1..=1000 {
             let url = format!(
                 "{base}/repos/{}/{}/issues?state=open&per_page=100&page={page}",
                 repository.owner, repository.name
             );
-            let records: Vec<IssueResponse> = self.json(&url)?;
+            let (records, page_bytes): (Vec<IssueResponse>, u64) =
+                self.json_with_limit(&url, MAX_GITHUB_JSON_RESPONSE_BYTES)?;
             let count = records.len();
+            let new_issue_count = records
+                .iter()
+                .filter(|issue| issue.pull_request.is_none())
+                .count();
+            response_bytes =
+                checked_issue_budgets(response_bytes, page_bytes, issues.len(), new_issue_count)?;
             issues.extend(
                 records
                     .into_iter()
@@ -239,6 +264,47 @@ impl GitHubClient {
         }
         Err("GitHub issue pagination exceeded 1000 pages".to_string())
     }
+}
+
+fn read_response_limited(response: Response, limit: u64) -> Result<Vec<u8>, String> {
+    let limit_plus_one = limit.saturating_add(1);
+    if response
+        .content_length()
+        .is_some_and(|length| length > limit)
+    {
+        return Err(format!("GitHub response exceeds the {limit} byte limit"));
+    }
+    let mut bytes = Vec::with_capacity(
+        response
+            .content_length()
+            .unwrap_or(0)
+            .min(limit)
+            .min(64 * 1024) as usize,
+    );
+    response
+        .take(limit_plus_one)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "Could not read GitHub response".to_string())?;
+    if bytes.len() as u64 > limit {
+        return Err(format!("GitHub response exceeds the {limit} byte limit"));
+    }
+    Ok(bytes)
+}
+
+fn checked_issue_budgets(
+    response_bytes: u64,
+    page_bytes: u64,
+    issue_count: usize,
+    new_issue_count: usize,
+) -> Result<u64, String> {
+    let total_bytes = response_bytes.saturating_add(page_bytes);
+    if total_bytes > MAX_GITHUB_ISSUES_RESPONSE_BYTES {
+        return Err("GitHub issue data exceeds the 64 MiB aggregate response limit".into());
+    }
+    if issue_count.saturating_add(new_issue_count) > MAX_GITHUB_ISSUES {
+        return Err("GitHub issue listing exceeds the 10,000 issue limit".into());
+    }
+    Ok(total_bytes)
 }
 
 fn valid_segment(value: &str) -> bool {
@@ -368,6 +434,28 @@ mod tests {
         format!("http://{address}")
     }
 
+    fn mock_close_delimited_server(status: u16, body: Vec<u8>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 2048];
+            let _ = stream.read(&mut request).unwrap();
+            let reason = if status == 200 {
+                "OK"
+            } else {
+                "Internal Server Error"
+            };
+            write!(
+                stream,
+                "HTTP/1.1 {status} {reason}\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+            stream.write_all(&body).unwrap();
+        });
+        format!("http://{address}")
+    }
+
     #[test]
     fn accepts_repository_identifiers_and_github_urls() {
         assert_eq!(
@@ -422,6 +510,48 @@ mod tests {
         assert_eq!(issues.last().unwrap().number, 101);
         assert_eq!(issues[0].labels, vec!["bug"]);
         assert_eq!(issues.last().unwrap().body, "body text");
+    }
+
+    #[test]
+    fn rejects_oversized_github_json_responses_before_deserialization() {
+        let base = mock_close_delimited_server(
+            200,
+            vec![b' '; (MAX_GITHUB_JSON_RESPONSE_BYTES + 1) as usize],
+        );
+        let client = GitHubClient::with_config(base.clone(), std::env::temp_dir()).unwrap();
+        assert!(
+            client
+                .json::<serde_json::Value>(&base)
+                .unwrap_err()
+                .contains("exceeds")
+        );
+    }
+
+    #[test]
+    fn issue_pagination_budgets_bound_aggregate_bytes_and_issue_count() {
+        assert!(
+            checked_issue_budgets(MAX_GITHUB_ISSUES_RESPONSE_BYTES - 10, 11, 0, 0)
+                .unwrap_err()
+                .contains("aggregate response limit")
+        );
+        assert!(
+            checked_issue_budgets(0, 0, MAX_GITHUB_ISSUES, 1)
+                .unwrap_err()
+                .contains("10,000 issue limit")
+        );
+        assert_eq!(checked_issue_budgets(100, 200, 9_999, 1).unwrap(), 300);
+    }
+
+    #[test]
+    fn caps_buffered_github_error_details() {
+        let base = mock_close_delimited_server(
+            500,
+            vec![b'x'; (MAX_GITHUB_ERROR_RESPONSE_BYTES + 1) as usize],
+        );
+        let client = GitHubClient::with_config(base.clone(), std::env::temp_dir()).unwrap();
+        let error = client.request(&base).unwrap_err();
+        assert!(error.len() < 500);
+        assert!(!error.contains("exceeds"));
     }
 
     #[test]
