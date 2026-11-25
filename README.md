@@ -9,7 +9,7 @@
 [![Status: Early implementation](https://img.shields.io/badge/status-early%20implementation-8b5cf6.svg)](#project-status)
 [![Language: Rust](https://img.shields.io/badge/core-Rust-orange.svg)](https://www.rust-lang.org/)
 [![Interface: CLI](https://img.shields.io/badge/interface-CLI-64748b.svg)](#the-current-cli)
-[![License: TBD](https://img.shields.io/badge/license-to%20be%20decided-lightgrey.svg)](#project-status)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
 *Every codebase is a labyrinth. Hecate helps you find the path to a worthwhile contribution.*
 
@@ -272,13 +272,17 @@ The runtime includes a real provider adapter and deterministic reliability/integ
 
 ## Project status
 
-**Hecate is in early implementation.** The CLI supports local inspection, public GitHub repository retrieval, Rust source analysis, open-issue retrieval, heuristic issue-to-code mapping and contribution ranking, evidence-backed draft plans, explicitly approved isolated local Git workspaces, and `contribute` flows for user-supplied or model-generated replacement/new-file proposals with full-hash approval. The model agent is limited to six read-only repository tools; patch application is restricted to validated human-approved operations. There is no general-purpose write tool, shell tool, or validation runner. Planning and reference matching remain heuristic; HECATE does not execute repository code or tests. The project license has not yet been selected.
+**Hecate is in early implementation.** The CLI supports local inspection, public GitHub repository retrieval, Rust source analysis, open-issue retrieval, heuristic issue-to-code mapping and contribution ranking, evidence-backed draft plans, explicitly approved isolated local Git workspaces, and `contribute` flows for user-supplied or model-generated replacement/new-file proposals with full-hash approval. The model agent is limited to six read-only repository tools; patch application is restricted to validated human-approved operations. There is no general-purpose write tool, shell tool, or validation runner. Planning and reference matching remain heuristic; HECATE does not execute repository code or tests. HECATE is dual-licensed under MIT OR Apache-2.0.
 
 This repository will evolve alongside the implementation. Design decisions, milestones and limitations should remain visible rather than being hidden behind ambitious claims.
 
 ## Contributing
 
 Early feedback on the product direction, architecture, threat model, and discovery quality is welcome. Contribution guidelines will be added as the codebase takes shape.
+
+## License
+
+HECATE is dual-licensed under the MIT License or Apache License, Version 2.0, at your option. The full license texts are in [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE).
 
 ## Name
 

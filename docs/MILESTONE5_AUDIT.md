@@ -14,9 +14,9 @@ This report records the initial review before remediation. The reviewed baseline
 
 There is no CI workflow to run formatting, checking, and tests on Windows, Ubuntu, and macOS. The implementation has distinct Unix and Windows filesystem and patch-application paths (`src/workspace.rs`, `src/agent/patch_application.rs`), so a Windows-only local run cannot establish that the Unix branch remains buildable or that the macOS/Ubuntu behavior remains covered. Local tests will be reported separately from any configured matrix.
 
-### Low — release metadata is incomplete
+### Low — release metadata was incomplete at audit time
 
-`README.md` advertises the license as TBD and does not provide a license file. This is a release-readiness blocker for distribution until the project owner chooses and supplies licensing terms; the engineering review will not select a license on the owner's behalf.
+At the Milestone 5 review, `README.md` advertised the license as TBD and no license files existed. The project owner had not yet selected terms, so the engineering review did not choose a license. Milestone 6A subsequently records the owner-approved dual MIT OR Apache-2.0 choice and the owner's confirmation that they created the original project material, with the MIT notice `Copyright 2026 Samarth Mehrotra`.
 
 ### Informational — threat-model boundary remains material
 
@@ -54,7 +54,7 @@ No warnings are suppressed. The final `cargo check --locked` completed without w
 - **High:** None identified in the independent review of the approval/application trust chain.
 - **Medium:** Unbounded GitHub response and issue accumulation — fixed with per-response, aggregate-byte, and issue-count limits and regression coverage.
 - **Medium:** No cross-platform CI configuration — addressed by the new three-platform workflow; remote CI results remain unverified.
-- **Low, remaining:** No license has been selected or included. The README still marks the license TBD. This milestone does not choose legal terms; an open-source public release should wait for the project owner to select and add a license.
+- **Low, at the time of this assessment:** No license had been selected or included. Milestone 6A subsequently records the owner-approved license selection, attribution, texts, and metadata. This historical finding is resolved by that later work.
 - **Informational, remaining:** The bounded local-CLI threat model excludes malicious same-user concurrent modification of the selected workspace parent. Preparation is not race-free or an OS sandbox; multi-file patch application is not atomic as a group or crash-safe. The limits and recovery behavior remain documented in `SECURITY.md`.
 
 ### Verified security boundaries
@@ -73,8 +73,10 @@ Review confirmed the model has only the registered read-only repository tools; t
 
 ### Dependencies and remaining limitations
 
-No dependency or lockfile changes were needed. Direct dependencies were reviewed against source usage and `cargo tree --locked --depth 1`; the lockfile was used by all validation commands. `cargo-audit` is not installed, so known advisory database scanning was not performed; no network installation or advisory lookup was attempted. `Cargo.toml` does not declare an MSRV, and CI checks stable Rust only. The project license remains undecided. Local validation covers Windows only, despite the newly configured cross-platform CI.
+No dependency or lockfile changes were needed. Direct dependencies were reviewed against source usage and `cargo tree --locked --depth 1`; the lockfile was used by all validation commands. `cargo-audit` is not installed, so known advisory database scanning was not performed; no network installation or advisory lookup was attempted. `Cargo.toml` does not declare an MSRV, and CI checks stable Rust only. The license selection was undecided at the time of this assessment; Milestone 6A records the owner's later choice and attribution. Dependency license metadata is descriptive input for review, not a legal compatibility determination. Local validation covers Windows only, despite the newly configured cross-platform CI.
+
+The Milestone 6A Cargo metadata inventory found license metadata for the reviewed dependency packages; this does not establish that every license is compatible with HECATE's dual license. Expressions requiring particular care include `ring` (Apache-2.0 AND ISC), `webpki-root-certs` (CDLA-Permissive-2.0), and ICU Unicode-3.0 packages. The inventory also includes packages with combined license expressions such as AWS-LC. These metadata strings warrant manual legal review; no compatibility conclusion is made here.
 
 ### Decision
 
-**Not ready for an open-source public release yet.** The implementation is a release candidate under its documented bounded local-CLI threat model, and the identified actionable Medium resource issue is fixed. The project owner must select and add a license before publishing it as open source, and the configured Ubuntu/macOS CI jobs should produce results before claiming those platforms pass. This assessment makes no claim of complete sandbox isolation or production-grade security.
+**At the time of the Milestone 5 assessment, HECATE was not ready for an open-source public release.** The implementation was a release candidate under its documented bounded local-CLI threat model, and the identified actionable Medium resource issue was fixed. Milestone 6A later records the selected license terms and confirmed attribution; configured Ubuntu/macOS CI jobs still need results before claiming those platforms pass. This assessment makes no claim of complete sandbox isolation or production-grade security.

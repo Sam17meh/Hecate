@@ -2,6 +2,12 @@
 name = "hecate"
 version = "0.1.0"
 edition = "2024"
+description = "Repository intelligence and contribution assistance CLI"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Sam17meh/Hecate"
+readme = "README.md"
+keywords = ["repository", "code-analysis", "github", "cli", "open-source"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 toml = "1.1.6"
