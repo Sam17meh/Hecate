@@ -105,7 +105,7 @@ Discovery agents should not be the final judges of their own findings. Important
 Hecate may investigate, plan, implement, and verify. The contributor decides what to pursue, reviews changes, and controls whether anything is submitted upstream.
 
 ### 5. Isolation by default
-Contribution preparation uses a dedicated local clone and issue branch, separate from the contributor's existing checkout. Future implementation work must also use restricted execution environments. Untrusted repository code must never be treated as safe merely because an AI agent selected it.
+Contribution preparation uses a dedicated local clone and issue branch, separate from the contributor's existing checkout. Future implementation work must also use restricted execution environments. Untrusted repository code must never be treated as safe, merely because an AI agent selected it.
 
 ### 6. Useful over impressive
 The goal is not to produce a long report or maximise the number of agents. The goal is to identify a small number of changes that genuinely help a project.
