@@ -1,0 +1,32 @@
+name: Windows package
+
+on:
+  push:
+    tags:
+      - 'v0.1.0'
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Build and verify Windows x64 candidates
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.99.1
+        with:
+          targets: x86_64-pc-windows-msvc
+      - name: Build, inspect, and package both CRT candidates
+        shell: pwsh
+        run: ./scripts/package-windows.ps1
+      - name: Upload verified package and inspection report
+        uses: actions/upload-artifact@v4
+        with:
+          name: hecate-v0.1.0-x86_64-pc-windows-msvc
+          path: |
+            dist/hecate-v0.1.0-x86_64-pc-windows-msvc.zip
+            dist/hecate-v0.1.0-x86_64-pc-windows-msvc.zip.sha256
+            dist/build-inspection.txt
+          if-no-files-found: error
+          retention-days: 14
