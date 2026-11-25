@@ -1,45 +1,5 @@
+use crate::cli::Command;
 use std::path::{Path, PathBuf};
-
-/// Typed commands accepted by both the command-line parser and future in-process clients.
-#[derive(clap::Subcommand, Debug)]
-pub(crate) enum Command {
-    /// Inspect a local directory or public GitHub repository
-    Inspect { repository: String },
-    /// Find and rank contribution opportunities from a public repository's open issues
-    Discover { repository: String },
-    /// Investigate a discovered issue and prepare an evidence-backed contribution plan
-    Plan {
-        repository: String,
-        issue_number: u64,
-    },
-    /// Review an issue plan, request confirmation, and create an isolated local Git clone
-    Prepare {
-        repository: String,
-        issue_number: u64,
-        /// Override the HECATE-managed workspace root (also configurable via HECATE_WORKSPACE_DIR)
-        #[arg(long)]
-        workspace_dir: Option<PathBuf>,
-    },
-    /// Prepare a workspace, obtain or generate a proposal, require approval, and apply it
-    #[command(group(
-        clap::ArgGroup::new("proposal_source")
-            .required(true)
-            .args(["proposal", "generate"])
-    ))]
-    Contribute {
-        repository: String,
-        issue_number: u64,
-        /// Bounded JSON PatchProposal file (schema version 1)
-        #[arg(long)]
-        proposal: Option<PathBuf>,
-        /// Generate an untrusted proposal with the configured native model provider
-        #[arg(long)]
-        generate: bool,
-        /// Override the HECATE-managed workspace root (also configurable via HECATE_WORKSPACE_DIR)
-        #[arg(long)]
-        workspace_dir: Option<PathBuf>,
-    },
-}
 
 pub(crate) fn dispatch(command: Command) -> Result<(), String> {
     dispatch_with(command, &mut CliExecutor)
@@ -147,7 +107,8 @@ impl CommandExecutor for CliExecutor {
 
 #[cfg(test)]
 mod tests {
-    use super::{Command, CommandExecutor, dispatch_with};
+    use super::{CommandExecutor, dispatch_with};
+    use crate::cli::Command;
     use std::path::PathBuf;
 
     #[derive(Debug, PartialEq)]

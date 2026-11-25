@@ -1,6 +1,7 @@
 use crate::{agent, application, contribution_cli, github, planning, terminal, workspace};
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use std::path::Path;
+use std::{env, io::IsTerminal};
 
 macro_rules! safe_line {
     ($($argument:tt)*) => {{
@@ -17,10 +18,64 @@ macro_rules! safe_line {
 )]
 struct Cli {
     #[command(subcommand)]
-    command: dispatch::Command,
+    command: Command,
+}
+
+#[derive(clap::Subcommand, Debug, PartialEq, Eq)]
+pub(crate) enum Command {
+    /// Inspect a local directory or public GitHub repository
+    Inspect { repository: String },
+    /// Find and rank contribution opportunities from a public repository's open issues
+    Discover { repository: String },
+    /// Investigate a discovered issue and prepare an evidence-backed contribution plan
+    Plan {
+        repository: String,
+        issue_number: u64,
+    },
+    /// Review an issue plan, request confirmation, and create an isolated local Git clone
+    Prepare {
+        repository: String,
+        issue_number: u64,
+        /// Override the HECATE-managed workspace root (also configurable via HECATE_WORKSPACE_DIR)
+        #[arg(long)]
+        workspace_dir: Option<std::path::PathBuf>,
+    },
+    /// Prepare a workspace, obtain or generate a proposal, require approval, and apply it
+    #[command(group(
+        clap::ArgGroup::new("proposal_source")
+            .required(true)
+            .args(["proposal", "generate"])
+    ))]
+    Contribute {
+        repository: String,
+        issue_number: u64,
+        /// Bounded JSON PatchProposal file (schema version 1)
+        #[arg(long)]
+        proposal: Option<std::path::PathBuf>,
+        /// Generate an untrusted proposal with the configured native model provider
+        #[arg(long)]
+        generate: bool,
+        /// Override the HECATE-managed workspace root (also configurable via HECATE_WORKSPACE_DIR)
+        #[arg(long)]
+        workspace_dir: Option<std::path::PathBuf>,
+    },
 }
 
 pub(crate) fn run() {
+    let has_arguments = env::args_os().len() > 1;
+    if startup_mode(
+        has_arguments,
+        std::io::stdin().is_terminal(),
+        std::io::stdout().is_terminal(),
+    ) == StartupMode::InteractiveMenu
+    {
+        if let Err(error) = crate::terminal::menu::run() {
+            terminal::presentation::error(&error);
+            std::process::exit(1);
+        }
+        return;
+    }
+
     let cli = Cli::parse();
     if let Err(error) = dispatch::dispatch(cli.command) {
         terminal::presentation::error(&error);
@@ -28,7 +83,50 @@ pub(crate) fn run() {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StartupMode {
+    InteractiveMenu,
+    CommandLine,
+}
+
+fn startup_mode(
+    has_arguments: bool,
+    stdin_is_terminal: bool,
+    stdout_is_terminal: bool,
+) -> StartupMode {
+    if !has_arguments && stdin_is_terminal && stdout_is_terminal {
+        StartupMode::InteractiveMenu
+    } else {
+        StartupMode::CommandLine
+    }
+}
+
+pub(crate) fn dispatch_command(command: Command) -> Result<(), String> {
+    dispatch::dispatch(command)
+}
+
+pub(crate) fn help_text() -> String {
+    Cli::command().render_help().to_string()
+}
+
 mod dispatch;
+
+#[cfg(test)]
+mod startup_tests {
+    use super::{StartupMode, startup_mode};
+
+    #[test]
+    fn only_no_argument_invocations_with_both_terminals_enter_menu() {
+        assert_eq!(
+            startup_mode(false, true, true),
+            StartupMode::InteractiveMenu
+        );
+        assert_eq!(startup_mode(false, false, true), StartupMode::CommandLine);
+        assert_eq!(startup_mode(false, true, false), StartupMode::CommandLine);
+        assert_eq!(startup_mode(true, true, true), StartupMode::CommandLine);
+    }
+}
+
 fn prepare_workspace(
     repository_input: &str,
     issue_number: u64,

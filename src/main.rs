@@ -1,7 +1,7 @@
 pub mod agent;
 mod analysis;
 mod application;
-mod cli;
+pub(crate) mod cli;
 mod contribution_cli;
 mod discovery;
 mod github;
